@@ -15,6 +15,7 @@ build/
 .env*.local
 **/.env
 **/.env.local
+prototipo/backend/.env
 prototipo/backend/data/
 
 # Node
