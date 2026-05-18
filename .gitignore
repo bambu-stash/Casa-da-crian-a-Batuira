@@ -1,0 +1,41 @@
+# Python
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Ambiente e segredos
+.env
+.env.local
+.env*.local
+**/.env
+**/.env.local
+prototipo/backend/data/
+
+# Node
+node_modules/
+prototipo/frontend/node_modules/
+
+# Next.js
+prototipo/frontend/.next/
+prototipo/frontend/out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/settings.local.json
