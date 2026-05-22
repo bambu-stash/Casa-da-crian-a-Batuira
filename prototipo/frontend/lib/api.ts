@@ -79,7 +79,6 @@ export interface HealthData {
   status: string;
   services: {
     evolution_api: "configured" | "missing_key";
-    anthropic: "configured" | "missing_key";
   };
 }
 
@@ -87,7 +86,6 @@ export interface BotSettings {
   org_name: string;
   bot_enabled: boolean;
   bot_fallback_phone: string;
-  anthropic_api_key?: string;
   evolution_api_key?: string;
   evolution_api_url?: string;
   evolution_instance?: string;
@@ -111,6 +109,9 @@ export interface Attendant {
   whatsapp_number: string;
   email: string;
   active: number;
+  role: string;
+  avatar_url: string;
+  bio: string;
 }
 
 export interface Conversation {

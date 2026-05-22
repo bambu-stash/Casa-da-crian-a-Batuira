@@ -63,8 +63,8 @@ export default function ConfiguracoesPage() {
     org_name: "", bot_enabled: true, bot_fallback_phone: "",
   });
   const [health, setHealth] = useState<HealthData | null>(null);
-  const [apiKeys, setApiKeys] = useState({ anthropic_api_key: "", evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
-  const [masks, setMasks] = useState({ anthropic_api_key: "", evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
+  const [apiKeys, setApiKeys] = useState({ evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
+  const [masks, setMasks] = useState({ evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -106,7 +106,6 @@ export default function ConfiguracoesPage() {
       if (!s) return;
       setForm({ org_name: s.org_name, bot_enabled: s.bot_enabled, bot_fallback_phone: s.bot_fallback_phone });
       setMasks({
-        anthropic_api_key: s.anthropic_api_key ?? "",
         evolution_api_key: s.evolution_api_key ?? "",
         evolution_api_url: s.evolution_api_url ?? "",
         evolution_instance: s.evolution_instance ?? "",
@@ -126,7 +125,6 @@ export default function ConfiguracoesPage() {
     setSaving(true);
     setSaved(false);
     const patch: Partial<BotSettings> = { ...form };
-    if (apiKeys.anthropic_api_key) patch.anthropic_api_key = apiKeys.anthropic_api_key;
     if (apiKeys.evolution_api_key) patch.evolution_api_key = apiKeys.evolution_api_key;
     if (apiKeys.evolution_api_url) patch.evolution_api_url = apiKeys.evolution_api_url;
     if (apiKeys.evolution_instance) patch.evolution_instance = apiKeys.evolution_instance;
@@ -135,12 +133,11 @@ export default function ConfiguracoesPage() {
     if (result) {
       setForm({ org_name: result.org_name, bot_enabled: result.bot_enabled, bot_fallback_phone: result.bot_fallback_phone });
       setMasks({
-        anthropic_api_key: result.anthropic_api_key ?? "",
         evolution_api_key: result.evolution_api_key ?? "",
         evolution_api_url: result.evolution_api_url ?? "",
         evolution_instance: result.evolution_instance ?? "",
       });
-      setApiKeys({ anthropic_api_key: "", evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
+      setApiKeys({ evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     }
@@ -188,7 +185,6 @@ export default function ConfiguracoesPage() {
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: "Evolution API", ok: svc?.evolution_api === "configured" },
-                { label: "Anthropic (Claude)", ok: svc?.anthropic === "configured" },
               ].map(({ label, ok }) => (
                 <div key={label} className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm ${ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
                   <StatusDot ok={!!ok} />
@@ -207,9 +203,6 @@ export default function ConfiguracoesPage() {
             <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg">
               Deixe em branco para manter a chave atual.
             </p>
-            <SecretField label="Anthropic API Key" name="anthropic_api_key"
-              value={apiKeys.anthropic_api_key} onChange={setKey("anthropic_api_key")}
-              placeholder={masks.anthropic_api_key || "sk-ant-… (atual mascarada)"} />
             <SecretField label="Evolution API Key" name="evolution_api_key"
               value={apiKeys.evolution_api_key} onChange={setKey("evolution_api_key")}
               placeholder={masks.evolution_api_key || "Chave atual mascarada"} />

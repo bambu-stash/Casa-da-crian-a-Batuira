@@ -5,9 +5,6 @@ BASE_DIR = Path(__file__).parent
 
 
 class Settings(BaseSettings):
-    # Anthropic
-    anthropic_api_key: str = ""
-
     # Evolution API (WhatsApp)
     evolution_api_url: str = "http://localhost:8080"
     evolution_api_key: str = ""

@@ -10,10 +10,6 @@ def _override() -> dict:
     return _load()
 
 
-def get_anthropic_key() -> str:
-    return _override().get("anthropic_api_key") or _env.anthropic_api_key
-
-
 def get_evolution_key() -> str:
     return _override().get("evolution_api_key") or _env.evolution_api_key
 

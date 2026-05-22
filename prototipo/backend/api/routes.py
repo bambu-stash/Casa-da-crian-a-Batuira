@@ -33,7 +33,6 @@ class SettingsPatch(BaseModel):
     evolution_api_key: str | None = None
     evolution_api_url: str | None = None
     evolution_instance: str | None = None
-    anthropic_api_key: str | None = None
     business_hours_start: str | None = None
     business_hours_end: str | None = None
     business_days: str | None = None
@@ -57,6 +56,9 @@ class AttendantBody(BaseModel):
     email: str = ""
     supabase_user_id: str = ""
     active: bool = True
+    role: str = ""
+    avatar_url: str = ""
+    bio: str = ""
 
 
 class ReplyBody(BaseModel):
@@ -107,12 +109,10 @@ class WebhookPayload(BaseModel):
 @router.get("/health")
 def health():
     evolution_ok = bool(get_evolution_key())
-    anthropic_ok = bool(settings.anthropic_api_key)
     return {
         "status": "ok",
         "services": {
             "evolution_api": "configured" if evolution_ok else "missing_key",
-            "anthropic": "configured" if anthropic_ok else "missing_key",
         },
     }
 
@@ -454,10 +454,10 @@ def list_attendants():
 def create_attendant(body: AttendantBody, _: Auth):
     with get_conn() as conn:
         row_id = conn.execute(
-            "INSERT INTO attendants (name, sector_id, whatsapp_number, email, supabase_user_id, active) "
-            "VALUES (?,?,?,?,?,?)",
+            "INSERT INTO attendants (name, sector_id, whatsapp_number, email, supabase_user_id, active, role, avatar_url, bio) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (body.name, body.sector_id, body.whatsapp_number, body.email,
-             body.supabase_user_id, int(body.active)),
+             body.supabase_user_id, int(body.active), body.role, body.avatar_url, body.bio),
         ).lastrowid
         row = conn.execute(
             "SELECT a.*, s.name AS sector_name FROM attendants a "
@@ -471,9 +471,10 @@ def update_attendant(attendant_id: int, body: AttendantBody, _: Auth):
     with get_conn() as conn:
         conn.execute(
             "UPDATE attendants SET name=?, sector_id=?, whatsapp_number=?, email=?, "
-            "supabase_user_id=?, active=? WHERE id=?",
+            "supabase_user_id=?, active=?, role=?, avatar_url=?, bio=? WHERE id=?",
             (body.name, body.sector_id, body.whatsapp_number, body.email,
-             body.supabase_user_id, int(body.active), attendant_id),
+             body.supabase_user_id, int(body.active), body.role, body.avatar_url, body.bio,
+             attendant_id),
         )
         row = conn.execute(
             "SELECT a.*, s.name AS sector_name FROM attendants a "

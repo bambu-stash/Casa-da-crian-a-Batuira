@@ -11,7 +11,6 @@ _ALLOWED_KEYS = {
     "org_name",
     "bot_enabled",
     "bot_fallback_phone",
-    "anthropic_api_key",
     "evolution_api_key",
     "evolution_api_url",
     "evolution_instance",
@@ -22,7 +21,7 @@ _ALLOWED_KEYS = {
     "conversation_timeout_hours",
 }
 
-_SENSITIVE_KEYS = {"anthropic_api_key", "evolution_api_key"}
+_SENSITIVE_KEYS = {"evolution_api_key"}
 
 
 def _load() -> dict:
@@ -45,7 +44,6 @@ def get_settings() -> dict:
         "org_name": _env.org_name,
         "bot_enabled": True,
         "bot_fallback_phone": _env.bot_fallback_phone,
-        "anthropic_api_key": _mask(_env.anthropic_api_key),
         "evolution_api_key": _mask(_env.evolution_api_key),
         "evolution_api_url": _env.evolution_api_url,
         "evolution_instance": _env.evolution_instance,

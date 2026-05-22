@@ -4,7 +4,6 @@ import { type HealthData } from "@/lib/api";
 const LABELS: Record<string, string> = {
   google_oauth:  "Google OAuth",
   evolution_api: "Evolution API",
-  anthropic:     "Anthropic (Claude)",
 };
 
 export default function ServiceStatus({ health }: { health: HealthData | null }) {

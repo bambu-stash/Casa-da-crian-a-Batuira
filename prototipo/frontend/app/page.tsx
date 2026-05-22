@@ -133,7 +133,6 @@ export default function Dashboard() {
               <div className="flex items-center gap-6 flex-wrap">
                 {[
                   { label: "Evolution API", ok: svc?.evolution_api === "configured" },
-                  { label: "Anthropic (Claude)", ok: svc?.anthropic === "configured" },
                 ].map(({ label, ok }) => (
                   <div key={label} className="flex items-center gap-2 text-sm text-gray-600">
                     <ServiceDot ok={ok} />
