@@ -15,6 +15,11 @@ _ALLOWED_KEYS = {
     "evolution_api_key",
     "evolution_api_url",
     "evolution_instance",
+    "business_hours_start",
+    "business_hours_end",
+    "business_days",
+    "off_hours_message",
+    "conversation_timeout_hours",
 }
 
 _SENSITIVE_KEYS = {"anthropic_api_key", "evolution_api_key"}
@@ -44,6 +49,11 @@ def get_settings() -> dict:
         "evolution_api_key": _mask(_env.evolution_api_key),
         "evolution_api_url": _env.evolution_api_url,
         "evolution_instance": _env.evolution_instance,
+        "business_hours_start": "08:00",
+        "business_hours_end": "18:00",
+        "business_days": "0,1,2,3,4",
+        "off_hours_message": "",
+        "conversation_timeout_hours": 24,
     }
     overrides = _load()
     for k, v in overrides.items():

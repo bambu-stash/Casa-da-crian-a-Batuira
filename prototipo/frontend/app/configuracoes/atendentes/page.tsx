@@ -68,7 +68,10 @@ export default function AtendentesPage() {
   const setF = (k: keyof AttendantForm) => (v: string | number) =>
     setForm((f) => ({ ...f, [k]: v }));
 
-  const bySector = sectors.map((s) => ({
+  const criancaSectors = sectors.filter((s) => s.institution !== "mae");
+  const maeSectors     = sectors.filter((s) => s.institution === "mae");
+
+  const bySector = (list: typeof sectors) => list.map((s) => ({
     sector: s,
     members: attendants.filter((a) => a.sector_id === s.id),
   }));
@@ -167,40 +170,71 @@ export default function AtendentesPage() {
             </div>
           )}
 
-          {/* Grouped by sector */}
-          {bySector.map(({ sector, members }) => (
-            <div key={sector.id} className="bg-white rounded-2xl border border-gray-100 shadow overflow-hidden">
-              <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
-                <span className="text-base">{sector.emoji}</span>
-                <p className="font-semibold text-gray-700 text-sm">{sector.name}</p>
-                <span className="text-xs text-gray-400">({members.length} atendente{members.length !== 1 ? "s" : ""})</span>
-              </div>
-              {members.length === 0 ? (
-                <p className="px-4 py-4 text-xs text-gray-400">Nenhum atendente cadastrado.</p>
-              ) : (
-                members.map((a) => (
-                  <div key={a.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-gray-800">{a.name}</p>
-                      <p className="text-xs text-gray-400 truncate">{a.email || a.whatsapp_number || "—"}</p>
-                    </div>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-400"}`}>
-                      {a.active ? "ativo" : "inativo"}
-                    </span>
-                    <button onClick={() => startEdit(a)} className="text-gray-400 hover:text-blue-500 transition">
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => handleDelete(a.id)} className="text-gray-400 hover:text-red-500 transition">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))
-              )}
+          {/* Casa da Criança */}
+          {criancaSectors.length > 0 && (
+            <div>
+              <p className="text-xs font-bold text-blue-600 uppercase tracking-wider mb-2">🏠 Casa da Criança Batuira</p>
+              {bySector(criancaSectors).map(({ sector, members }) => (
+                <SectorBlock key={sector.id} sector={sector} members={members} onEdit={startEdit} onDelete={handleDelete} />
+              ))}
             </div>
-          ))}
+          )}
+
+          {/* Casa da Mãe */}
+          {maeSectors.length > 0 && (
+            <div>
+              <p className="text-xs font-bold text-pink-600 uppercase tracking-wider mb-2">💗 Casa da Mãe Batuira</p>
+              {bySector(maeSectors).map(({ sector, members }) => (
+                <SectorBlock key={sector.id} sector={sector} members={members} onEdit={startEdit} onDelete={handleDelete} isMae />
+              ))}
+            </div>
+          )}
 
         </div>
       </main>
     </AuthGuard>
+  );
+}
+
+function SectorBlock({
+  sector, members, onEdit, onDelete, isMae,
+}: {
+  sector: Sector;
+  members: Attendant[];
+  onEdit: (a: Attendant) => void;
+  onDelete: (id: number) => void;
+  isMae?: boolean;
+}) {
+  return (
+    <div className={`bg-white rounded-2xl border shadow overflow-hidden mb-3 ${isMae ? "border-pink-100" : "border-gray-100"}`}>
+      <div className={`px-4 py-3 border-b flex items-center gap-2 ${isMae ? "bg-pink-50 border-pink-100" : "bg-gray-50 border-gray-100"}`}>
+        <span className="text-base">{sector.emoji}</span>
+        <p className={`font-semibold text-sm ${isMae ? "text-pink-800" : "text-gray-700"}`}>{sector.name}</p>
+        <span className={`text-xs ${isMae ? "text-pink-400" : "text-gray-400"}`}>
+          ({members.length} atendente{members.length !== 1 ? "s" : ""})
+        </span>
+      </div>
+      {members.length === 0 ? (
+        <p className={`px-4 py-4 text-xs italic ${isMae ? "text-pink-300" : "text-gray-400"}`}>Nenhum atendente cadastrado.</p>
+      ) : (
+        members.map((a) => (
+          <div key={a.id} className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 last:border-0">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-800">{a.name}</p>
+              <p className="text-xs text-gray-400 truncate">{a.email || a.whatsapp_number || "—"}</p>
+            </div>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-400"}`}>
+              {a.active ? "ativo" : "inativo"}
+            </span>
+            <button onClick={() => onEdit(a)} className="text-gray-400 hover:text-blue-500 transition">
+              <Pencil className="w-4 h-4" />
+            </button>
+            <button onClick={() => onDelete(a.id)} className="text-gray-400 hover:text-red-500 transition">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        ))
+      )}
+    </div>
   );
 }

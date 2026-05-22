@@ -100,6 +100,7 @@ export interface Sector {
   emoji: string;
   menu_order: number;
   active: number;
+  institution: "crianca" | "mae";
 }
 
 export interface Attendant {
@@ -119,9 +120,11 @@ export interface Conversation {
   sector_id: number | null;
   sector_name: string | null;
   sector_emoji: string | null;
+  sector_institution: "crianca" | "mae" | null;
   attendant_id: number | null;
   attendant_name: string | null;
-  status: "pending_menu" | "waiting" | "active" | "closed";
+  status: "pending_institution" | "pending_menu" | "waiting" | "active" | "closed";
+  institution: "crianca" | "mae" | "";
   created_at: string;
   updated_at: string;
   last_message: string | null;
@@ -151,7 +154,7 @@ export interface DashboardStats {
   total_conversations: number;
   waiting: number;
   active: number;
-  by_sector: { name: string; emoji: string; total: number; waiting: number }[];
+  by_sector: { name: string; emoji: string; institution: string; total: number; waiting: number }[];
 }
 
 // ── API functions ─────────────────────────────────────────────────────────────
@@ -206,3 +209,17 @@ export interface QRCodeData {
   pairing_code: string;
 }
 export const getQRCode = () => get<QRCodeData>("/whatsapp/qrcode");
+
+export interface FlowData {
+  id: number;
+  name: string;
+  nodes: unknown[];
+  edges: unknown[];
+  active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export const getFlow = () => get<FlowData>("/flow");
+export const saveFlow = (body: { name: string; nodes: unknown[]; edges: unknown[] }) =>
+  post<FlowData>("/flow", body);

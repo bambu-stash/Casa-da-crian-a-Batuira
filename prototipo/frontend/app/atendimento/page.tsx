@@ -1,11 +1,13 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   ArrowLeft, Send, XCircle, RefreshCw, HandMetal,
   Settings, ChevronDown, Search,
 } from "lucide-react";
 import AuthGuard from "@/components/AuthGuard";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import {
   getConversations, getMessages, getAttendants, getSectors, assignConversation,
   replyConversation, closeConversation,
@@ -16,22 +18,32 @@ import {
 
 const LS_KEY = "batuira_atd_collapsed";
 
-// Palette cycled by sector index (deterministic by position in list)
-const SECTOR_PALETTE = [
-  { badge: "bg-blue-100 text-blue-700",    dot: "bg-blue-400"    },
-  { badge: "bg-violet-100 text-violet-700", dot: "bg-violet-400" },
-  { badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-400" },
-  { badge: "bg-orange-100 text-orange-700", dot: "bg-orange-400" },
-  { badge: "bg-rose-100 text-rose-700",    dot: "bg-rose-400"    },
-  { badge: "bg-teal-100 text-teal-700",    dot: "bg-teal-400"    },
-  { badge: "bg-amber-100 text-amber-700",  dot: "bg-amber-400"   },
+// Palette para Casa da Criança Batuira (cores normais)
+const CRIANCA_PALETTE = [
+  { badge: "bg-blue-100 text-blue-700",      dot: "bg-blue-400"      },
+  { badge: "bg-violet-100 text-violet-700",  dot: "bg-violet-400"    },
+  { badge: "bg-emerald-100 text-emerald-700",dot: "bg-emerald-400"   },
+  { badge: "bg-orange-100 text-orange-700",  dot: "bg-orange-400"    },
+  { badge: "bg-teal-100 text-teal-700",      dot: "bg-teal-400"      },
+  { badge: "bg-amber-100 text-amber-700",    dot: "bg-amber-400"     },
+];
+
+// Palette para Casa da Mãe Batuira (tons rosa/pink)
+const MAE_PALETTE = [
+  { badge: "bg-pink-100 text-pink-700",      dot: "bg-pink-400"      },
+  { badge: "bg-rose-100 text-rose-700",      dot: "bg-rose-400"      },
+  { badge: "bg-fuchsia-100 text-fuchsia-700",dot: "bg-fuchsia-400"   },
+  { badge: "bg-pink-200 text-pink-800",      dot: "bg-pink-500"      },
+  { badge: "bg-rose-200 text-rose-800",      dot: "bg-rose-500"      },
+  { badge: "bg-fuchsia-200 text-fuchsia-800",dot: "bg-fuchsia-500"   },
 ];
 
 const STATUS_CONFIG: Record<string, { dot: string; label: string }> = {
-  pending_menu: { dot: "bg-sky-400",    label: "Novo"           },
-  waiting:      { dot: "bg-amber-400",  label: "Aguardando"     },
-  active:       { dot: "bg-green-400",  label: "Em atendimento" },
-  closed:       { dot: "bg-gray-300",   label: "Resolvido"      },
+  pending_institution: { dot: "bg-purple-400", label: "Aguard. Inst."  },
+  pending_menu:        { dot: "bg-sky-400",    label: "Novo"           },
+  waiting:             { dot: "bg-amber-400",  label: "Aguardando"     },
+  active:              { dot: "bg-green-400",  label: "Em atendimento" },
+  closed:              { dot: "bg-gray-300",   label: "Resolvido"      },
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -59,6 +71,16 @@ function matchesSearch(conv: Conversation, q: string): boolean {
 // ── page ──────────────────────────────────────────────────────────────────────
 
 export default function AtendimentoPage() {
+  return (
+    <Suspense>
+      <AtendimentoInner />
+    </Suspense>
+  );
+}
+
+function AtendimentoInner() {
+  const searchParams = useSearchParams();
+  const initialStatus = searchParams.get("status") ?? "waiting";
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected]           = useState<Conversation | null>(null);
   const [messages, setMessages]           = useState<Message[]>([]);
@@ -67,11 +89,14 @@ export default function AtendimentoPage() {
   const [replyText, setReplyText]         = useState("");
   const [sending, setSending]             = useState(false);
   const [assigning, setAssigning]         = useState<number | null>(null);
-  const [filterStatus, setFilterStatus]   = useState<string>("waiting");
+  const [filterStatus, setFilterStatus]   = useState<string>(initialStatus);
   const [search, setSearch]               = useState("");
+  const [confirmClose, setConfirmClose]   = useState(false);
   // collapsed: key = sector_id as string, value = true means closed
   const [collapsed, setCollapsed]         = useState<Record<string, boolean>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevUnreadRef = useRef<number>(0);
+  const alertActiveRef = useRef<boolean>(false);
 
   // ── load & persist collapsed state ──────────────────────────────────────────
 
@@ -143,6 +168,43 @@ export default function AtendimentoPage() {
     return () => clearInterval(t);
   }, [selected?.id]);
 
+  // ── notification alert (title + favicon when tab is hidden) ─────────────────
+
+  useEffect(() => {
+    const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
+    const grew = totalUnread > prevUnreadRef.current;
+    prevUnreadRef.current = totalUnread;
+
+    const setFavicon = (alert: boolean) => {
+      const link = document.querySelector<HTMLLinkElement>("link[rel~='icon']") ??
+        (() => {
+          const el = document.createElement("link");
+          el.rel = "icon";
+          document.head.appendChild(el);
+          return el;
+        })();
+      link.href = alert ? "/favicon-alert.svg?v=alert" : "/favicon.svg";
+      link.type = "image/svg+xml";
+    };
+
+    if (grew && document.visibilityState === "hidden") {
+      alertActiveRef.current = true;
+      document.title = `(${totalUnread}) Painel de Atendimento`;
+      setFavicon(true);
+    }
+
+    const clearAlert = () => {
+      if (alertActiveRef.current) {
+        alertActiveRef.current = false;
+        document.title = "Painel de Atendimento";
+        setFavicon(false);
+      }
+    };
+
+    document.addEventListener("visibilitychange", clearAlert);
+    return () => document.removeEventListener("visibilitychange", clearAlert);
+  }, [conversations]);
+
   // ── actions ──────────────────────────────────────────────────────────────────
 
   const handleSelect = async (conv: Conversation) => {
@@ -175,7 +237,10 @@ export default function AtendimentoPage() {
     }
   };
 
-  const handleClose = async () => {
+  const handleClose = () => setConfirmClose(true);
+
+  const handleCloseConfirmed = async () => {
+    setConfirmClose(false);
     if (!selected) return;
     await closeConversation(selected.id);
     setSelected(null);
@@ -190,14 +255,23 @@ export default function AtendimentoPage() {
 
   const waitingTotal = conversations.filter((c) => c.status === "waiting").length;
 
-  // Group conversations by sector_id; null/undefined go into "no_sector"
+  // Conversas aguardando triagem (sem instituição definida ainda)
+  const triageConvs = conversations.filter(
+    (c) => matchesSearch(c, search) && c.status === "pending_institution"
+  );
+
+  // Group conversations by sector_id; null/undefined go into "no_sector" (excludes triage)
   const bySektor = new Map<number | null, Conversation[]>();
   for (const conv of conversations) {
     if (!matchesSearch(conv, search)) continue;
+    if (conv.status === "pending_institution") continue;
     const key = conv.sector_id ?? null;
     if (!bySektor.has(key)) bySektor.set(key, []);
     bySektor.get(key)!.push(conv);
   }
+
+  const criancaSectors = sectors.filter((s) => s.institution === "crianca" || !s.institution);
+  const maeSectors     = sectors.filter((s) => s.institution === "mae");
 
   // When searching, treat all sectors as expanded
   const isOpen = (id: string) => search.trim() !== "" || !collapsed[id];
@@ -226,6 +300,7 @@ export default function AtendimentoPage() {
               className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="">Todos os status</option>
+              <option value="pending_institution">Triagem</option>
               <option value="waiting">Aguardando</option>
               <option value="active">Em atendimento</option>
               <option value="closed">Encerradas</option>
@@ -238,6 +313,17 @@ export default function AtendimentoPage() {
             </Link>
           </div>
         </header>
+
+        {confirmClose && selected && (
+          <ConfirmDialog
+            title="Encerrar atendimento?"
+            message={`Encerrar a conversa de ${selected.contact_name || selected.contact_phone}? Esta ação não pode ser desfeita.`}
+            confirmLabel="Encerrar"
+            danger
+            onConfirm={handleCloseConfirmed}
+            onCancel={() => setConfirmClose(false)}
+          />
+        )}
 
         <div className="flex flex-1 min-h-0">
 
@@ -263,14 +349,33 @@ export default function AtendimentoPage() {
               </div>
             </div>
 
-            {/* sector groups */}
+            {/* sector groups — divided by institution */}
             <div className="overflow-y-auto flex-1">
-              {sectors.map((sector, idx) => {
+
+              {/* ── Aguardando Triagem ── */}
+              {triageConvs.length > 0 && (
+                <SectorGroup
+                  sectorKey="triage"
+                  label="⏳ Aguardando Triagem"
+                  conversations={triageConvs}
+                  palette={{ badge: "bg-purple-100 text-purple-700", dot: "bg-purple-400" }}
+                  open={isOpen("triage")}
+                  selectedId={selected?.id ?? null}
+                  onToggle={() => toggleSector("triage")}
+                  onSelect={handleSelect}
+                />
+              )}
+
+              {/* ── Casa da Criança Batuira ── */}
+              <div className="px-3 pt-3 pb-1">
+                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
+                  🏠 Casa da Criança Batuira
+                </p>
+              </div>
+              {criancaSectors.map((sector, idx) => {
                 const sectorKey = String(sector.id);
                 const convs = bySektor.get(sector.id) ?? [];
-                const open  = isOpen(sectorKey);
-                const palette = SECTOR_PALETTE[idx % SECTOR_PALETTE.length];
-
+                const palette = CRIANCA_PALETTE[idx % CRIANCA_PALETTE.length];
                 return (
                   <SectorGroup
                     key={sector.id}
@@ -278,10 +383,36 @@ export default function AtendimentoPage() {
                     label={`${sector.emoji} ${sector.name}`}
                     conversations={convs}
                     palette={palette}
-                    open={open}
+                    open={isOpen(sectorKey)}
                     selectedId={selected?.id ?? null}
                     onToggle={() => toggleSector(sectorKey)}
                     onSelect={handleSelect}
+                  />
+                );
+              })}
+
+              {/* ── Casa da Mãe Batuira ── */}
+              <div className="px-3 pt-4 pb-1 border-t border-pink-100 mt-1">
+                <p className="text-[10px] font-bold text-pink-600 uppercase tracking-wider">
+                  💗 Casa da Mãe Batuira
+                </p>
+              </div>
+              {maeSectors.map((sector, idx) => {
+                const sectorKey = String(sector.id);
+                const convs = bySektor.get(sector.id) ?? [];
+                const palette = MAE_PALETTE[idx % MAE_PALETTE.length];
+                return (
+                  <SectorGroup
+                    key={sector.id}
+                    sectorKey={sectorKey}
+                    label={`${sector.emoji} ${sector.name}`}
+                    conversations={convs}
+                    palette={palette}
+                    open={isOpen(sectorKey)}
+                    selectedId={selected?.id ?? null}
+                    onToggle={() => toggleSector(sectorKey)}
+                    onSelect={handleSelect}
+                    isMae
                   />
                 );
               })}
@@ -337,7 +468,7 @@ export default function AtendimentoPage() {
 // ── SectorGroup ───────────────────────────────────────────────────────────────
 
 function SectorGroup({
-  sectorKey, label, conversations, palette, open, selectedId, onToggle, onSelect,
+  sectorKey, label, conversations, palette, open, selectedId, onToggle, onSelect, isMae,
 }: {
   sectorKey: string;
   label: string;
@@ -347,19 +478,22 @@ function SectorGroup({
   selectedId: number | null;
   onToggle: () => void;
   onSelect: (c: Conversation) => void;
+  isMae?: boolean;
 }) {
   return (
-    <div className="border-b border-gray-50">
+    <div className={`border-b ${isMae ? "border-pink-50" : "border-gray-50"}`}>
       {/* header */}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 transition text-left"
+        className={`w-full flex items-center gap-2 px-3 py-2.5 transition text-left ${
+          isMae ? "hover:bg-pink-50" : "hover:bg-gray-50"
+        }`}
       >
         <ChevronDown
-          className="w-3.5 h-3.5 text-gray-400 shrink-0 transition-transform duration-200"
+          className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${isMae ? "text-pink-300" : "text-gray-400"}`}
           style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}
         />
-        <span className="text-xs font-semibold text-gray-700 flex-1 truncate">{label}</span>
+        <span className={`text-xs font-semibold flex-1 truncate ${isMae ? "text-pink-700" : "text-gray-700"}`}>{label}</span>
         {conversations.length > 0 && (
           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${palette.badge}`}>
             {conversations.length}
@@ -377,7 +511,7 @@ function SectorGroup({
       >
         <div className="overflow-hidden">
           {conversations.length === 0 ? (
-            <p className="px-4 py-3 text-[11px] text-gray-400 italic">
+            <p className={`px-4 py-3 text-[11px] italic ${isMae ? "text-pink-300" : "text-gray-400"}`}>
               Nenhuma conversa neste setor.
             </p>
           ) : (
@@ -468,10 +602,11 @@ function ConvItem({
 function StatusPill({ status }: { status: string }) {
   const cfg = STATUS_CONFIG[status];
   const styles: Record<string, string> = {
-    pending_menu: "bg-sky-50 text-sky-600",
-    waiting:      "bg-amber-50 text-amber-700",
-    active:       "bg-green-50 text-green-700",
-    closed:       "bg-gray-100 text-gray-500",
+    pending_institution: "bg-purple-50 text-purple-600",
+    pending_menu:        "bg-sky-50 text-sky-600",
+    waiting:             "bg-amber-50 text-amber-700",
+    active:              "bg-green-50 text-green-700",
+    closed:              "bg-gray-100 text-gray-500",
   };
   return (
     <span className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium ${styles[status] ?? "bg-gray-100 text-gray-500"}`}>
@@ -521,7 +656,10 @@ function ChatView({
             {conv.contact_name || conv.contact_phone}
           </p>
           <p className="text-xs text-gray-400 truncate">
-            {conv.sector_emoji} {conv.sector_name ?? "Sem setor"}
+            {conv.institution === "mae"
+              ? <span className="text-pink-500 font-medium">💗 Casa da Mãe</span>
+              : <span className="text-blue-500 font-medium">🏠 Casa da Criança</span>}
+            {conv.sector_name && <span> · {conv.sector_emoji} {conv.sector_name}</span>}
             {conv.contact_name && <span className="ml-1 text-gray-300">· {conv.contact_phone}</span>}
           </p>
         </div>
@@ -576,10 +714,20 @@ function ChatView({
         </div>
       )}
 
+      {/* pending_institution — bot bar */}
+      {conv.status === "pending_institution" && (
+        <div className="bg-purple-50 border-b border-purple-100 px-4 py-2 shrink-0">
+          <p className="text-xs text-purple-600">🤖 Bot aguardando contato escolher a instituição.</p>
+        </div>
+      )}
+
       {/* pending_menu — bot bar */}
       {conv.status === "pending_menu" && (
         <div className="bg-gray-50 border-b border-gray-100 px-4 py-2 shrink-0">
-          <p className="text-xs text-gray-500">🤖 Bot está exibindo o menu de opções para o contato.</p>
+          <p className="text-xs text-gray-500">
+            🤖 Bot exibindo menu de setores
+            {conv.institution === "mae" ? " — 💗 Casa da Mãe Batuira" : " — 🏠 Casa da Criança Batuira"}.
+          </p>
         </div>
       )}
 

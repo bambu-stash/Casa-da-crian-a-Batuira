@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS sectors (
     description TEXT    DEFAULT '',
     emoji       TEXT    DEFAULT '',
     menu_order  INTEGER DEFAULT 0,
-    active      INTEGER DEFAULT 1
+    active      INTEGER DEFAULT 1,
+    institution TEXT    DEFAULT 'crianca'
 );
 
 CREATE TABLE IF NOT EXISTS attendants (
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     contact_name  TEXT    DEFAULT '',
     sector_id     INTEGER REFERENCES sectors(id),
     attendant_id  INTEGER REFERENCES attendants(id),
-    status        TEXT    DEFAULT 'pending_menu',
+    status        TEXT    DEFAULT 'pending_institution',
+    institution   TEXT    DEFAULT '',
     created_at    TEXT    DEFAULT (datetime('now','localtime')),
     updated_at    TEXT    DEFAULT (datetime('now','localtime'))
 );
@@ -56,24 +58,72 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TEXT,
     active       INTEGER DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS conversation_transfers (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id   INTEGER NOT NULL REFERENCES conversations(id),
+    from_sector_id    INTEGER REFERENCES sectors(id),
+    to_sector_id      INTEGER NOT NULL REFERENCES sectors(id),
+    from_attendant_id INTEGER REFERENCES attendants(id),
+    created_at        TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS flows (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL DEFAULT 'Flow Principal',
+    nodes      TEXT    NOT NULL DEFAULT '[]',
+    edges      TEXT    NOT NULL DEFAULT '[]',
+    active     INTEGER DEFAULT 1,
+    created_at TEXT    DEFAULT (datetime('now','localtime')),
+    updated_at TEXT    DEFAULT (datetime('now','localtime'))
+);
 """
 
+# (name, description, emoji, menu_order, institution)
 _DEFAULT_SECTORS = [
-    ("Financeiro",       "Pagamentos, mensalidades e boletos",         "💰", 1),
-    ("Pedagógico",       "Professores, atividades e desenvolvimento",  "📚", 2),
-    ("Administrativo",   "Matrículas, documentos e secretaria",        "🗂️", 3),
-    ("Assistência Social","Atendimento social e encaminhamentos",      "🤝", 4),
+    ("Financeiro",        "Pagamentos, mensalidades e boletos",        "💰", 1, "crianca"),
+    ("Pedagógico",        "Professores, atividades e desenvolvimento", "📚", 2, "crianca"),
+    ("Administrativo",    "Matrículas, documentos e secretaria",       "🗂️", 3, "crianca"),
+    ("Assistência Social","Atendimento social e encaminhamentos",      "🤝", 4, "crianca"),
+    ("Financeiro",        "Pagamentos, mensalidades e boletos",        "💰", 1, "mae"),
+    ("Pedagógico",        "Professores, atividades e desenvolvimento", "📚", 2, "mae"),
+    ("Administrativo",    "Matrículas, documentos e secretaria",       "🗂️", 3, "mae"),
+    ("Assistência Social","Atendimento social e encaminhamentos",      "🤝", 4, "mae"),
 ]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Aplica migrações incrementais ao banco existente."""
+    for col, table, default in [
+        ("institution",  "sectors",       "'crianca'"),
+        ("institution",  "conversations", "''"),
+        ("csat_rating",  "conversations", "NULL"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass  # coluna já existe
+
+    # Garante que setores existentes sem institution recebam 'crianca'
+    conn.execute("UPDATE sectors SET institution='crianca' WHERE institution IS NULL OR institution=''")
+
+    # Insere setores da Casa da Mãe se ainda não existirem
+    if conn.execute("SELECT COUNT(*) FROM sectors WHERE institution='mae'").fetchone()[0] == 0:
+        conn.executemany(
+            "INSERT INTO sectors (name, description, emoji, menu_order, institution) VALUES (?,?,?,?,?)",
+            [s for s in _DEFAULT_SECTORS if s[4] == "mae"],
+        )
 
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(_DDL)
-        if conn.execute("SELECT COUNT(*) FROM sectors").fetchone()[0] == 0:
+        _migrate(conn)
+        if conn.execute("SELECT COUNT(*) FROM sectors WHERE institution='crianca'").fetchone()[0] == 0:
             conn.executemany(
-                "INSERT INTO sectors (name, description, emoji, menu_order) VALUES (?,?,?,?)",
-                _DEFAULT_SECTORS,
+                "INSERT INTO sectors (name, description, emoji, menu_order, institution) VALUES (?,?,?,?,?)",
+                [s for s in _DEFAULT_SECTORS if s[4] == "crianca"],
             )
 
 

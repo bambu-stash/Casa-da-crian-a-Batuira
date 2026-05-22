@@ -1,0 +1,58 @@
+# DEPLOY/docker-compose.yml
+# Sobe a Evolution API + Back-end do bot na VM Oracle Cloud.
+# Uso: docker compose -f DEPLOY/docker-compose.yml up -d --build
+
+services:
+
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution_api
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - evolution_instances:/evolution/instances
+    environment:
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=${DATABASE_URL}
+      - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_MESSAGES=true
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=${REDIS_URL}
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - WEBHOOK_GLOBAL_URL=${BACKEND_WEBHOOK_URL}
+      - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=true
+      - CONFIG_SESSION_PHONE_VERSION=2.3000.1030415680
+    networks:
+      - bot-network
+
+  backend:
+    build:
+      context: ../prototipo/backend
+      dockerfile: Dockerfile
+    container_name: bot_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - EVOLUTION_API_URL=http://evolution-api:8080
+    depends_on:
+      - evolution-api
+    networks:
+      - bot-network
+
+volumes:
+  evolution_instances:
+    driver: local
+
+networks:
+  bot-network:
+    driver: bridge

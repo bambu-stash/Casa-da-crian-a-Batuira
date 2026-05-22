@@ -1,4 +1,5 @@
 "use client";
+import { useState, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -18,8 +19,10 @@ import ActionNode     from "@/components/flow/ActionNode";
 import TriggerNode    from "@/components/flow/TriggerNode";
 import DeletableEdge  from "@/components/flow/DeletableEdge";
 import NodeInspector  from "@/components/flow/NodeInspector";
-import { Plus, RotateCcw, ArrowLeft } from "lucide-react";
+import { Plus, RotateCcw, ArrowLeft, Upload, Download } from "lucide-react";
 import Link from "next/link";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import { getFlow, saveFlow } from "@/lib/api";
 
 const nodeTypes = {
   messageNode:   MessageNode,
@@ -45,11 +48,64 @@ const defaultEdgeOptions = {
 };
 
 export default function FlowPage() {
-  const { nodes, edges, onNodesChange, onEdgesChange, onConnect, addNode, reset } =
+  const [mounted, setMounted] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "saving" | "loading" | "saved" | "error">("idle");
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { nodes, edges, onNodesChange, onEdgesChange, onConnect, addNode, reset, loadFlow } =
     useFlowStore();
+
+  useEffect(() => { setMounted(true); }, []);
+
+  async function handlePublish() {
+    setSyncStatus("saving");
+    const result = await saveFlow({ name: "Flow Principal", nodes, edges });
+    if (result) {
+      setSyncStatus("saved");
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSyncStatus("idle"), 3000);
+    } else {
+      setSyncStatus("error");
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSyncStatus("idle"), 3000);
+    }
+  }
+
+  async function handleLoad() {
+    setSyncStatus("loading");
+    const flow = await getFlow();
+    if (flow && flow.nodes?.length) {
+      loadFlow(flow.nodes as any, flow.edges as any);
+      setSyncStatus("saved");
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSyncStatus("idle"), 3000);
+    } else {
+      setSyncStatus("error");
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSyncStatus("idle"), 3000);
+    }
+  }
+
+  const syncLabel =
+    syncStatus === "saving" ? "Publicando…"
+    : syncStatus === "loading" ? "Carregando…"
+    : syncStatus === "saved" ? "Sincronizado ✓"
+    : syncStatus === "error" ? "Erro de sincronização"
+    : "";
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
+
+      {confirmReset && (
+        <ConfirmDialog
+          title="Apagar todo o fluxo?"
+          message="Os nós e conexões atuais serão perdidos e o fluxo voltará ao exemplo padrão."
+          confirmLabel="Apagar"
+          danger
+          onConfirm={() => { setConfirmReset(false); reset(); }}
+          onCancel={() => setConfirmReset(false)}
+        />
+      )}
 
       {/* Toolbar */}
       <header className="flex items-center gap-3 px-4 py-2.5 bg-white border-b shadow-sm z-10">
@@ -57,6 +113,11 @@ export default function FlowPage() {
           <ArrowLeft className="w-4 h-4" />
         </Link>
         <h1 className="text-sm font-semibold text-gray-700">Editor de Fluxo</h1>
+        {syncLabel && (
+          <span className={`text-[10px] hidden sm:inline ${syncStatus === "error" ? "text-red-500" : syncStatus === "saved" ? "text-green-600" : "text-gray-400"}`}>
+            {syncLabel}
+          </span>
+        )}
         <div className="flex-1" />
 
         {ADD_BUTTONS.map(({ kind, label, color }) => (
@@ -71,7 +132,25 @@ export default function FlowPage() {
         ))}
 
         <button
-          onClick={reset}
+          onClick={handleLoad}
+          disabled={syncStatus === "loading" || syncStatus === "saving"}
+          className="flex items-center gap-1 text-gray-600 text-xs px-3 py-1.5 rounded-lg border hover:bg-gray-100 transition disabled:opacity-50"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Carregar
+        </button>
+
+        <button
+          onClick={handlePublish}
+          disabled={syncStatus === "loading" || syncStatus === "saving"}
+          className="flex items-center gap-1 text-white text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 font-medium transition disabled:opacity-50"
+        >
+          <Upload className="w-3.5 h-3.5" />
+          Publicar
+        </button>
+
+        <button
+          onClick={() => setConfirmReset(true)}
           className="flex items-center gap-1 text-gray-500 text-xs px-3 py-1.5 rounded-lg border hover:bg-gray-100 transition"
         >
           <RotateCcw className="w-3.5 h-3.5" />
@@ -81,7 +160,11 @@ export default function FlowPage() {
 
       {/* Canvas */}
       <div className="flex-1 relative">
-        <ReactFlow
+        {!mounted ? (
+          <div className="flex items-center justify-center h-full text-sm text-gray-400">
+            Carregando editor…
+          </div>
+        ) : <ReactFlow
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
@@ -115,9 +198,9 @@ export default function FlowPage() {
               {" · "}Passe o mouse na seta para remover
             </div>
           </Panel>
-        </ReactFlow>
+        </ReactFlow>}
 
-        <NodeInspector />
+        {mounted && <NodeInspector />}
       </div>
     </div>
   );

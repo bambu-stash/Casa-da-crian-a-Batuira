@@ -63,7 +63,7 @@ export default function NodeInspector() {
             <label className="block text-xs text-gray-500 mb-1">Conteúdo da mensagem</label>
             <p className="text-xs text-gray-400 mb-1">
               Variáveis:{" "}
-              {["{guest_name}", "{checkin}", "{hotel_name}"].map((v) => (
+              {["{contact_name}", "{sector_name}", "{institution_name}", "{position}"].map((v) => (
                 <code key={v} className="bg-gray-100 px-1 rounded mr-1">{v}</code>
               ))}
             </p>
