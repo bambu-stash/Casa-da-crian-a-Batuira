@@ -39,7 +39,7 @@ fly auth login
 
 # 2. Provisionar o app reusando o fly.toml (NÃO faz deploy ainda)
 fly launch --no-deploy
-#   - Confirme o nome do app (ex.: batuira-bot) e a região gru (São Paulo)
+#   - Confirme o nome do app (ex.: casa-da-crian-a-batuira) e a região gru (São Paulo)
 #   - Se perguntar sobre sobrescrever o fly.toml, responda NÃO
 
 # 3. Criar o volume do SQLite (uma única vez)
@@ -59,7 +59,7 @@ fly secrets set \
 fly deploy
 
 # 6. Verificar saúde
-curl https://batuira-bot.fly.dev/api/health
+curl https://casa-da-crian-a-batuira.fly.dev/api/health
 #   esperado: {"status":"ok","services":{"evolution_api":"configured"}}
 ```
 
@@ -80,7 +80,7 @@ curl https://batuira-bot.fly.dev/api/health
 
    | Variável | Valor |
    |---|---|
-   | `NEXT_PUBLIC_API_URL` | `https://batuira-bot.fly.dev/api` |
+   | `NEXT_PUBLIC_API_URL` | `https://casa-da-crian-a-batuira.fly.dev/api` |
    | `NEXT_PUBLIC_SUPABASE_URL` | `https://muxpbrfojzalthrecxrb.supabase.co` |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `sb_publishable_...` (anon key do Supabase) |
 
@@ -100,7 +100,7 @@ fly secrets set ALLOWED_ORIGINS="https://batuira-xxx.vercel.app"
 2. Na **Evolution API**, configure o webhook global apontando para:
 
    ```
-   https://batuira-bot.fly.dev/api/whatsapp/webhook
+   https://casa-da-crian-a-batuira.fly.dev/api/whatsapp/webhook
    ```
 
    Habilite os eventos de mensagem (`messages.upsert`).
@@ -109,7 +109,7 @@ fly secrets set ALLOWED_ORIGINS="https://batuira-xxx.vercel.app"
 
 ## Verificação end-to-end
 
-1. **Backend:** `curl https://batuira-bot.fly.dev/api/health` → `{"status":"ok",...}`
+1. **Backend:** `curl https://casa-da-crian-a-batuira.fly.dev/api/health` → `{"status":"ok",...}`
 2. **Painel:** abra a URL da Vercel → tela de login → autentique via Supabase.
 3. **CORS:** confirme que setores e conversas carregam sem erro de CORS no console do navegador.
 4. **Webhook:** envie uma mensagem ao número do WhatsApp → a conversa deve aparecer no painel.
@@ -123,6 +123,6 @@ fly secrets set ALLOWED_ORIGINS="https://batuira-xxx.vercel.app"
 | Erro de CORS no console | `ALLOWED_ORIGINS` não bate com a URL da Vercel | `fly secrets set ALLOWED_ORIGINS=<url-exata>` |
 | Login local "desloga" após um tempo | `LOCAL_SECRET` não definido ou mudou | definir `LOCAL_SECRET` fixo nos secrets |
 | `/health` mostra `missing_key` | `EVOLUTION_API_KEY` ausente | `fly secrets set EVOLUTION_API_KEY=...` |
-| Webhook não chega | URL do webhook errada na Evolution API | usar `https://batuira-bot.fly.dev/api/whatsapp/webhook` |
+| Webhook não chega | URL do webhook errada na Evolution API | usar `https://casa-da-crian-a-batuira.fly.dev/api/whatsapp/webhook` |
 | Dados sumiram após deploy | volume não montado | conferir `[[mounts]]` no `fly.toml` e `fly volumes list` |
 | Token Supabase rejeitado (401) | `SUPABASE_URL` ausente no backend | `fly secrets set SUPABASE_URL=...` |

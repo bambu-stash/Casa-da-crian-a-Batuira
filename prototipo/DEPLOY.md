@@ -69,10 +69,10 @@ cd "prototipo/backend"
 Execute o comando de criação. A flag `--no-deploy` cria a app e o `fly.toml` sem fazer deploy ainda — isso é importante porque precisamos criar o volume primeiro:
 
 ```bash
-fly launch --name batuira-bot --region gru --no-deploy
+fly launch --name casa-da-crian-a-batuira --region gru --no-deploy
 ```
 
-> - `--name batuira-bot` → nome da sua app (deve ser único no Fly.io globalmente)
+> - `--name casa-da-crian-a-batuira` → nome da sua app (deve ser único no Fly.io globalmente)
 > - `--region gru` → São Paulo (mais próximo do Brasil)
 > - `--no-deploy` → não faz deploy ainda
 
@@ -145,7 +145,7 @@ fly secrets list
 Abra o arquivo `fly.toml` na pasta `backend/` e confirme que está assim:
 
 ```toml
-app = "batuira-bot"
+app = "casa-da-crian-a-batuira"
 primary_region = "gru"
 
 [build]
@@ -199,7 +199,7 @@ Abra a URL da sua app:
 fly open
 ```
 
-Ou acesse diretamente: `https://batuira-bot.fly.dev/api/health`
+Ou acesse diretamente: `https://casa-da-crian-a-batuira.fly.dev/api/health`
 
 A resposta deve ser:
 ```json
@@ -271,7 +271,7 @@ Adicione as três variáveis abaixo, uma por vez:
 
 | Name | Value | Environment |
 |------|-------|-------------|
-| `NEXT_PUBLIC_API_URL` | `https://batuira-bot.fly.dev/api` | Production, Preview, Development |
+| `NEXT_PUBLIC_API_URL` | `https://casa-da-crian-a-batuira.fly.dev/api` | Production, Preview, Development |
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://xxxx.supabase.co` | Production, Preview, Development |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `sb_publishable_...` | Production, Preview, Development |
 
@@ -323,7 +323,7 @@ Isso irá reiniciar automaticamente a máquina com o novo valor.
 
 No painel da Evolution API, configure o webhook apontando para o backend em produção:
 
-- **URL:** `https://batuira-bot.fly.dev/api/whatsapp/webhook`
+- **URL:** `https://casa-da-crian-a-batuira.fly.dev/api/whatsapp/webhook`
 - **Evento:** `messages.upsert`
 
 ---
@@ -357,7 +357,7 @@ fly scale show      # mostra configuração de CPU/memória
 
 | Serviço | URL |
 |---------|-----|
-| Backend (API) | `https://batuira-bot.fly.dev` |
-| Backend (health) | `https://batuira-bot.fly.dev/api/health` |
-| Backend (webhook) | `https://batuira-bot.fly.dev/api/whatsapp/webhook` |
+| Backend (API) | `https://casa-da-crian-a-batuira.fly.dev` |
+| Backend (health) | `https://casa-da-crian-a-batuira.fly.dev/api/health` |
+| Backend (webhook) | `https://casa-da-crian-a-batuira.fly.dev/api/whatsapp/webhook` |
 | Frontend | `https://batuira-bot.vercel.app` |
