@@ -1,0 +1,29 @@
+# Contexto de build do Fly (raiz) — exclui tudo que não é o backend.
+# Mantém o contexto pequeno e rápido.
+
+# Frontend inteiro (não entra na imagem do backend)
+prototipo/frontend/
+
+# Scripts e docs de deploy/relatório
+DEPLOY/
+prototipo/gerar_relatorio_bd.py
+*.docx
+ESTADO_PROJETO.md
+*.md
+
+# Git
+.git/
+.gitignore
+
+# Python
+**/venv/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Segredos e dados locais
+**/.env
+**/.env.*
+prototipo/backend/data/
+prototipo/backend/tests/
