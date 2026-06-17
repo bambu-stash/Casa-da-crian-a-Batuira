@@ -89,6 +89,11 @@ export interface BotSettings {
   evolution_api_key?: string;
   evolution_api_url?: string;
   evolution_instance?: string;
+  business_hours_start?: string;
+  business_hours_end?: string;
+  business_days?: string;
+  off_hours_message?: string;
+  conversation_timeout_hours?: number;
 }
 
 export interface Sector {
@@ -99,6 +104,18 @@ export interface Sector {
   menu_order: number;
   active: number;
   institution: "crianca" | "mae";
+}
+
+export interface AttendantProfile {
+  id: number;
+  name: string;
+  sector_id: number;
+  sector_name: string;
+  email: string;
+  role: string;
+  avatar_url: string;
+  bio: string;
+  supabase_user_id: string;
 }
 
 export interface Attendant {
@@ -112,6 +129,22 @@ export interface Attendant {
   role: string;
   avatar_url: string;
   bio: string;
+}
+
+export interface Contact {
+  phone: string;
+  name_override: string;
+  notes: string;
+  updated_at?: string;
+}
+
+export interface QuickReply {
+  id: number;
+  title: string;
+  content: string;
+  shortcut: string;
+  active: number | boolean;
+  created_at: string;
 }
 
 export interface Conversation {
@@ -130,6 +163,7 @@ export interface Conversation {
   updated_at: string;
   last_message: string | null;
   unread_count: number;
+  contact_name_override: string | null;
 }
 
 export interface Message {
@@ -148,7 +182,7 @@ export interface ApiKey {
   created_at: string;
   last_used_at: string | null;
   active: number;
-  key?: string; // only on creation
+  key?: string;
 }
 
 export interface DashboardStats {
@@ -197,6 +231,8 @@ export const replyConversation = (convId: number, text: string) =>
   post<{ success: boolean }>(`/conversations/${convId}/reply`, { text });
 export const closeConversation = (convId: number) =>
   post<{ success: boolean }>(`/conversations/${convId}/close`);
+export const transferConversation = (convId: number, sectorId: number) =>
+  post<{ success: boolean; sector: Sector }>(`/conversations/${convId}/transfer`, { sector_id: sectorId });
 
 export const getApiKeys = () => get<ApiKey[]>("/api-keys");
 export const createApiKey = (b: { name: string; user_email: string }) =>
@@ -205,22 +241,17 @@ export const revokeApiKey = (id: number) => del(`/api-keys/${id}`);
 
 export const getDashboardStats = () => get<DashboardStats>("/dashboard/stats");
 
+export const getMe = () => get<AttendantProfile | null>("/me");
+export const getContact = (phone: string) => get<Contact>(`/contacts/${phone}`);
+export const patchContact = (phone: string, body: Partial<Contact>) => patch<Contact>(`/contacts/${phone}`, body);
+export const getContactHistory = (phone: string) => get<Conversation[]>(`/contacts/${phone}/history`);
+export const getQuickReplies = () => get<QuickReply[]>("/quick-replies");
+export const createQuickReply = (b: Omit<QuickReply, "id" | "created_at">) => post<QuickReply>("/quick-replies", b);
+export const updateQuickReply = (id: number, b: Omit<QuickReply, "id" | "created_at">) => put<QuickReply>(`/quick-replies/${id}`, b);
+export const deleteQuickReply = (id: number) => del(`/quick-replies/${id}`);
+
 export interface QRCodeData {
   base64: string;
   pairing_code: string;
 }
 export const getQRCode = () => get<QRCodeData>("/whatsapp/qrcode");
-
-export interface FlowData {
-  id: number;
-  name: string;
-  nodes: unknown[];
-  edges: unknown[];
-  active: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export const getFlow = () => get<FlowData>("/flow");
-export const saveFlow = (body: { name: string; nodes: unknown[]; edges: unknown[] }) =>
-  post<FlowData>("/flow", body);

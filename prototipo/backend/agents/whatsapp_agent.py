@@ -64,16 +64,9 @@ QUEUE_POSITION = (
 )
 
 CLOSE_CONFIRMATION = (
-    "✅ Seu atendimento foi concluído!\n\n"
-    "Como você avalia nosso atendimento hoje?\n\n"
-    "1️⃣ Ótimo\n"
-    "2️⃣ Bom\n"
-    "3️⃣ Regular\n"
-    "4️⃣ Ruim\n\n"
-    "Digite o número da sua avaliação."
+    "✅ Seu atendimento foi concluído! Obrigado por entrar em contato.\n\n"
+    "Se precisar de ajuda novamente, é só enviar uma mensagem. Até logo! 😊"
 )
-
-CSAT_THANKS = "⭐ Obrigado pela sua avaliação! Até a próxima. 😊"
 
 ATTENDANT_NOTIFICATION = (
     "🔔 *NOVO CONTATO AGUARDANDO*\n\n"
@@ -155,10 +148,6 @@ class WhatsAppAgent:
         )
         return self.send_text(phone_raw, text)
 
-    def send_invalid_option(self, phone_raw: str, max_option: int) -> dict:
-        text = INVALID_OPTION.format(max_option=max_option)
-        return self.send_text(phone_raw, text)
-
     def send_invalid_institution(self, phone_raw: str) -> dict:
         return self.send_text(phone_raw, INVALID_INSTITUTION)
 
@@ -176,9 +165,6 @@ class WhatsAppAgent:
 
     def send_close_confirmation(self, phone_raw: str) -> dict:
         return self.send_text(phone_raw, CLOSE_CONFIRMATION)
-
-    def send_csat_thanks(self, phone_raw: str) -> dict:
-        return self.send_text(phone_raw, CSAT_THANKS)
 
     def send_attendant_notification(
         self, phone_raw: str, contact_name: str, contact_phone: str, sector_name: str
@@ -201,14 +187,3 @@ class WhatsAppAgent:
     def send_transfer_notification(self, phone_raw: str, sector_name: str) -> dict:
         text = TRANSFER_NOTICE.format(sector=sector_name)
         return self.send_text(phone_raw, text)
-
-    def send_fallback_alert(self, phone_raw: str, original_message: str) -> dict:
-        """Notifica responsável quando não há atendente disponível."""
-        phone = sanitize_whatsapp_number(phone_raw)
-        if not phone:
-            return {"success": False, "error": "Número inválido"}
-        text = (
-            "⚠️ *ATENDIMENTO PENDENTE*\n\n"
-            f"Mensagem sem atendente disponível:\n_{original_message}_"
-        )
-        return self._post("message/sendText", {"number": phone, "text": text})

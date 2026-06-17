@@ -13,8 +13,6 @@
     "react-dom": "^18",
     "lucide-react": "^0.435.0",
     "clsx": "^2.1.1",
-    "@xyflow/react": "^12.3.0",
-    "zustand": "^4.5.4",
     "@supabase/supabase-js": "^2.45.0"
   },
   "devDependencies": {

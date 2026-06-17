@@ -4,7 +4,7 @@ import Link from "next/link";
 import {
   ArrowLeft, Save, CheckCircle, XCircle, Copy, Check,
   Bot, Webhook, KeyRound, Eye, EyeOff, Users, LayoutGrid, Key,
-  QrCode, X, RefreshCw,
+  QrCode, X, RefreshCw, Clock, Zap,
 } from "lucide-react";
 import AuthGuard from "@/components/AuthGuard";
 import { getSettings, updateSettings, healthCheck, getQRCode, type BotSettings, type HealthData, type QRCodeData } from "@/lib/api";
@@ -61,6 +61,8 @@ function SecretField({ label, name, value, onChange, placeholder }: {
 export default function ConfiguracoesPage() {
   const [form, setForm] = useState<Partial<BotSettings>>({
     org_name: "", bot_enabled: true, bot_fallback_phone: "",
+    business_hours_start: "08:00", business_hours_end: "18:00",
+    business_days: "0,1,2,3,4", off_hours_message: "",
   });
   const [health, setHealth] = useState<HealthData | null>(null);
   const [apiKeys, setApiKeys] = useState({ evolution_api_key: "", evolution_api_url: "", evolution_instance: "" });
@@ -104,7 +106,15 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     getSettings().then((s) => {
       if (!s) return;
-      setForm({ org_name: s.org_name, bot_enabled: s.bot_enabled, bot_fallback_phone: s.bot_fallback_phone });
+      setForm({
+        org_name: s.org_name,
+        bot_enabled: s.bot_enabled,
+        bot_fallback_phone: s.bot_fallback_phone,
+        business_hours_start: s.business_hours_start ?? "08:00",
+        business_hours_end: s.business_hours_end ?? "18:00",
+        business_days: s.business_days ?? "0,1,2,3,4",
+        off_hours_message: s.off_hours_message ?? "",
+      });
       setMasks({
         evolution_api_key: s.evolution_api_key ?? "",
         evolution_api_url: s.evolution_api_url ?? "",
@@ -124,7 +134,15 @@ export default function ConfiguracoesPage() {
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
-    const patch: Partial<BotSettings> = { ...form };
+    const patch: Partial<BotSettings> = {
+      org_name: form.org_name,
+      bot_enabled: form.bot_enabled,
+      bot_fallback_phone: form.bot_fallback_phone,
+      business_hours_start: form.business_hours_start,
+      business_hours_end: form.business_hours_end,
+      business_days: form.business_days,
+      off_hours_message: form.off_hours_message,
+    };
     if (apiKeys.evolution_api_key) patch.evolution_api_key = apiKeys.evolution_api_key;
     if (apiKeys.evolution_api_url) patch.evolution_api_url = apiKeys.evolution_api_url;
     if (apiKeys.evolution_instance) patch.evolution_instance = apiKeys.evolution_instance;
@@ -160,11 +178,12 @@ export default function ConfiguracoesPage() {
           </div>
 
           {/* Atalhos */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
               { href: "/configuracoes/setores", icon: <LayoutGrid className="w-5 h-5" />, label: "Setores", desc: "Menu WhatsApp" },
               { href: "/configuracoes/atendentes", icon: <Users className="w-5 h-5" />, label: "Atendentes", desc: "Quem atende" },
               { href: "/configuracoes/api", icon: <Key className="w-5 h-5" />, label: "Acesso à API", desc: "Chaves externas" },
+              { href: "/configuracoes/respostas-rapidas", icon: <Zap className="w-5 h-5" />, label: "Respostas Rápidas", desc: "Atalhos de texto" },
             ].map(({ href, icon, label, desc }) => (
               <Link
                 key={href} href={href}
@@ -244,6 +263,78 @@ export default function ConfiguracoesPage() {
               onChange={(v) => setForm((f) => ({ ...f, bot_fallback_phone: v }))}
               placeholder="5511999990000"
               hint="Alerta enviado quando não há atendente disponível." />
+          </div>
+
+          {/* Horário de Atendimento */}
+          <div className="bg-white border border-gray-100 rounded-2xl shadow p-5 space-y-4">
+            <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <Clock className="w-4 h-4 text-gray-400" /> Horário de Atendimento
+            </h2>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Início</label>
+                <input
+                  type="time"
+                  value={form.business_hours_start ?? "08:00"}
+                  onChange={(e) => setForm((f) => ({ ...f, business_hours_start: e.target.value }))}
+                  className="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Término</label>
+                <input
+                  type="time"
+                  value={form.business_hours_end ?? "18:00"}
+                  onChange={(e) => setForm((f) => ({ ...f, business_hours_end: e.target.value }))}
+                  className="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Dias de Atendimento</label>
+              <div className="flex gap-2 flex-wrap">
+                {[
+                  { label: "Seg", val: "0" }, { label: "Ter", val: "1" },
+                  { label: "Qua", val: "2" }, { label: "Qui", val: "3" },
+                  { label: "Sex", val: "4" }, { label: "Sáb", val: "5" },
+                  { label: "Dom", val: "6" },
+                ].map(({ label, val }) => {
+                  const days = (form.business_days ?? "0,1,2,3,4").split(",").map((d) => d.trim());
+                  const active = days.includes(val);
+                  const toggle = () => {
+                    const next = active
+                      ? days.filter((d) => d !== val)
+                      : [...days, val].sort();
+                    setForm((f) => ({ ...f, business_days: next.join(",") }));
+                  };
+                  return (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={toggle}
+                      className={`w-10 h-10 rounded-full text-xs font-semibold transition ${
+                        active
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Mensagem fora do horário</label>
+              <textarea
+                value={form.off_hours_message ?? ""}
+                onChange={(e) => setForm((f) => ({ ...f, off_hours_message: e.target.value }))}
+                rows={3}
+                placeholder="Deixe em branco para usar a mensagem padrão com os horários."
+                className="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white resize-none"
+              />
+              <p className="text-xs text-gray-400">Deixe vazio para usar mensagem automática com horário e dias.</p>
+            </div>
           </div>
 
           {/* Parear WhatsApp */}

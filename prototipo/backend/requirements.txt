@@ -6,3 +6,4 @@ pydantic-settings==2.5.2
 phonenumbers==8.13.47
 python-dotenv==1.0.1
 python-jose[cryptography]==3.3.0
+bcrypt==4.2.1

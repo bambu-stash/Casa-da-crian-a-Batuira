@@ -1,77 +1,132 @@
-"""
-FlowEngine — interpreta nós e arestas do flow visual para controlar o bot.
+"""Motor de execução de fluxos visuais (nodes + edges do React Flow)."""
+from dataclasses import dataclass, field
 
-Usado pelo webhook para buscar conteúdo de mensagens e avaliar condições
-diretamente do flow salvo no banco, substituindo templates hardcoded.
-"""
-from __future__ import annotations
 
-import json
-from typing import Any
+@dataclass
+class FlowResult:
+    messages: list = field(default_factory=list)
+    waiting: bool = False
+    next_node_id: str | None = None
+    variables: dict = field(default_factory=dict)
+    terminal_action: str | None = None  # "end" | "sector"
+    institution: str | None = None
+    sector_name: str | None = None
 
 
 class FlowEngine:
-    def __init__(self, nodes: list[dict], edges: list[dict]) -> None:
-        self._nodes: dict[str, dict] = {n["id"]: n for n in nodes}
-        self._edges: list[dict] = edges
+    def __init__(self, nodes: list, edges: list):
+        self._nodes = {n["id"]: n for n in nodes}
+        self._edges = edges
 
-    # ── Acesso a nós ──────────────────────────────────────────────────────────
-
-    def node(self, node_id: str) -> dict | None:
-        return self._nodes.get(node_id)
-
-    def content(self, node_id: str, ctx: dict[str, Any] | None = None) -> str | None:
-        """Retorna o conteúdo renderizado de um nó de mensagem, ou None se não encontrado."""
-        n = self._nodes.get(node_id)
-        if not n:
-            return None
-        raw: str = n.get("data", {}).get("content") or ""
-        if not raw:
-            return None
-        return self._render(raw, ctx or {})
-
-    def condition(self, node_id: str, ctx: dict[str, Any]) -> bool:
-        """Avalia um nó de condição contra o contexto atual."""
-        n = self._nodes.get(node_id)
-        if not n:
-            return True
-        data = n.get("data", {})
-        field = data.get("conditionField", "")
-        expected = str(data.get("conditionValue", "")).lower()
-        actual = str(ctx.get(field, "")).lower()
-        return actual == expected
-
-    def next_node(self, from_id: str, condition_result: bool | None = None) -> str | None:
-        """Retorna o ID do próximo nó seguindo as arestas.
-
-        Para nós de condição, use condition_result=True/False para seguir
-        a aresta "Sim" ou "Não". Para outros nós, condition_result=None
-        segue a única aresta de saída.
-        """
-        outgoing = [e for e in self._edges if e["source"] == from_id]
-        if not outgoing:
-            return None
-        if condition_result is None:
-            return outgoing[0]["target"]
-        label = "Sim" if condition_result else "Não"
-        for e in outgoing:
-            if e.get("label") == label:
-                return e["target"]
+    def get_start_node_id(self) -> str | None:
+        for node_id, node in self._nodes.items():
+            if node["data"]["kind"] == "trigger":
+                return node_id
         return None
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _next_targets(self, node_id: str, label: str | None = None) -> list[str]:
+        return [
+            e["target"]
+            for e in self._edges
+            if e["source"] == node_id
+            and (label is None or e.get("label") == label)
+        ]
 
-    def _render(self, template: str, ctx: dict[str, Any]) -> str:
-        result = template
-        for key, value in ctx.items():
-            result = result.replace(f"{{{key}}}", str(value) if value is not None else "")
+    def _show_menu(self, node_id: str, result: FlowResult) -> None:
+        data = self._nodes[node_id]["data"]
+        content = data.get("content", "")
+        options = data.get("menuOptions", [])
+        opts_str = "\n".join(
+            f"{i + 1}. {opt['label']}" for i, opt in enumerate(options)
+        )
+        result.messages.append(f"{content}\n{opts_str}" if content else opts_str)
+        result.waiting = True
+        result.next_node_id = node_id
+
+    def process_message(
+        self,
+        current_node_id: str,
+        text: str,
+        variables: dict,
+        is_reply: bool,
+    ) -> FlowResult:
+        result = FlowResult(variables=dict(variables))
+        node = self._nodes.get(current_node_id)
+        if not node:
+            return result
+
+        if is_reply:
+            kind = node["data"]["kind"]
+            if kind == "question":
+                var_name = node["data"].get("variable", "")
+                if var_name:
+                    result.variables[var_name] = text
+                targets = self._next_targets(current_node_id)
+                if targets:
+                    return self._run(targets[0], result)
+            elif kind == "menu":
+                choices = {
+                    e.get("label", ""): e["target"]
+                    for e in self._edges
+                    if e["source"] == current_node_id
+                }
+                target = choices.get(text)
+                if target:
+                    return self._run(target, result)
+                # Opção inválida — reexibe menu
+                self._show_menu(current_node_id, result)
+            return result
+
+        return self._run(current_node_id, result)
+
+    def _run(self, node_id: str, result: FlowResult) -> FlowResult:
+        node = self._nodes.get(node_id)
+        if not node:
+            return result
+
+        kind = node["data"]["kind"]
+        data = node["data"]
+
+        if kind == "trigger":
+            targets = self._next_targets(node_id)
+            if targets:
+                return self._run(targets[0], result)
+
+        elif kind == "message":
+            content = data.get("content", "")
+            for k, v in result.variables.items():
+                content = content.replace(f"{{{k}}}", str(v))
+            result.messages.append(content)
+            targets = self._next_targets(node_id)
+            if targets:
+                return self._run(targets[0], result)
+
+        elif kind == "question":
+            result.messages.append(data.get("content", ""))
+            result.waiting = True
+            result.next_node_id = node_id
+
+        elif kind == "menu":
+            self._show_menu(node_id, result)
+
+        elif kind == "condition":
+            field_name = data.get("conditionField", "")
+            value = data.get("conditionValue", "")
+            actual = result.variables.get(field_name, "")
+            label = "Sim" if actual == value else "Não"
+            targets = self._next_targets(node_id, label=label)
+            if targets:
+                return self._run(targets[0], result)
+
+        elif kind == "end":
+            content = data.get("content", "")
+            if content:
+                result.messages.append(content)
+            result.terminal_action = "end"
+
+        elif kind == "sector":
+            result.terminal_action = "sector"
+            result.sector_name = data.get("sectorName", "")
+            result.institution = data.get("institution", "")
+
         return result
-
-    # ── Factory ───────────────────────────────────────────────────────────────
-
-    @classmethod
-    def from_row(cls, row: dict) -> "FlowEngine":
-        """Cria um FlowEngine a partir de uma linha da tabela flows."""
-        nodes = json.loads(row["nodes"]) if isinstance(row["nodes"], str) else row["nodes"]
-        edges = json.loads(row["edges"]) if isinstance(row["edges"], str) else row["edges"]
-        return cls(nodes, edges)

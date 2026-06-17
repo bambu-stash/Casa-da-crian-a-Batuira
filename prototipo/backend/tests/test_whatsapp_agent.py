@@ -1,10 +1,10 @@
-"""TDD – agents/whatsapp_agent.py"""
+"""Testes — agents/whatsapp_agent.py"""
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
-from agents.whatsapp_agent import WhatsAppAgent, WELCOME_TEMPLATE
+from agents.whatsapp_agent import WhatsAppAgent
 
 
 @pytest.fixture
@@ -12,19 +12,14 @@ def agent():
     return WhatsAppAgent()
 
 
-class TestSendWelcome:
-    def test_envia_mensagem_com_sucesso(self, agent):
+class TestSendText:
+    def test_envia_texto_com_sucesso(self, agent):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"id": "abc"}
         mock_resp.raise_for_status = MagicMock()
 
         with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
-            result = agent.send_welcome(
-                phone_raw="11987654321",
-                guest_name="João",
-                checkin="2026-05-01",
-                checkout="2026-05-05",
-            )
+            result = agent.send_text("11987654321", "Olá!")
 
         assert result["success"] is True
         assert result["data"] == {"id": "abc"}
@@ -32,95 +27,119 @@ class TestSendWelcome:
 
     def test_numero_invalido_retorna_erro_sem_chamada_http(self, agent):
         with patch("agents.whatsapp_agent.httpx.post") as mock_post:
-            result = agent.send_welcome(
-                phone_raw="xxx",
-                guest_name="João",
-                checkin="2026-05-01",
-                checkout="2026-05-05",
-            )
+            result = agent.send_text("xxx", "Olá!")
 
         assert result["success"] is False
         assert "inválido" in result["error"]
         mock_post.assert_not_called()
 
-    def test_mensagem_customizada_substitui_template(self, agent):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
-            agent.send_welcome(
-                phone_raw="11987654321",
-                guest_name="Ana",
-                checkin="2026-05-01",
-                checkout="2026-05-05",
-                custom_message="Mensagem especial",
-            )
-
-        _, kwargs = mock_post.call_args
-        assert kwargs["json"]["text"] == "Mensagem especial"
-
-    def test_template_padrao_contem_nome_e_datas(self, agent):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
-            agent.send_welcome(
-                phone_raw="11987654321",
-                guest_name="Maria",
-                checkin="2026-05-01",
-                checkout="2026-05-05",
-            )
-
-        _, kwargs = mock_post.call_args
-        text = kwargs["json"]["text"]
-        assert "Maria" in text
-        assert "2026-05-01" in text
-        assert "2026-05-05" in text
-
     def test_erro_http_retorna_falha(self, agent):
         with patch("agents.whatsapp_agent.httpx.post", side_effect=httpx.HTTPError("timeout")):
-            result = agent.send_welcome(
-                phone_raw="11987654321",
-                guest_name="Carlos",
-                checkin="2026-05-01",
-                checkout="2026-05-05",
-            )
+            result = agent.send_text("11987654321", "Olá!")
 
         assert result["success"] is False
         assert "timeout" in result["error"]
 
-
-class TestSendFallbackAlert:
-    def test_envia_alerta_com_sucesso(self, agent):
+    def test_payload_contem_numero_e_texto(self, agent):
         mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp):
-            result = agent.send_fallback_alert(
-                phone_raw="11999990000",
-                original_message="Qual o wifi?",
+        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
+            agent.send_text("11987654321", "Mensagem teste")
+
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["text"] == "Mensagem teste"
+        assert "5511987654321" in kwargs["json"]["number"]
+
+
+class TestSendInstitutionMenu:
+    def test_menu_contem_nome_do_contato(self, agent):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
+            agent.send_institution_menu("11987654321", "Maria")
+
+        _, kwargs = mock_post.call_args
+        assert "Maria" in kwargs["json"]["text"]
+
+    def test_menu_contem_opcoes_numeradas(self, agent):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
+            agent.send_institution_menu("11987654321", "")
+
+        _, kwargs = mock_post.call_args
+        text = kwargs["json"]["text"]
+        assert "1" in text
+        assert "2" in text
+
+
+class TestSendSectorConfirmation:
+    def test_confirmacao_contem_nome_do_setor(self, agent):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
+            agent.send_sector_confirmation("11987654321", "Financeiro")
+
+        _, kwargs = mock_post.call_args
+        assert "Financeiro" in kwargs["json"]["text"]
+
+
+class TestSendAttendantNotification:
+    def test_notificacao_contem_dados_do_contato(self, agent):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
+            result = agent.send_attendant_notification(
+                "11999990000", "João Silva", "5511987654321", "Financeiro"
             )
 
         assert result["success"] is True
+        _, kwargs = mock_post.call_args
+        text = kwargs["json"]["text"]
+        assert "João Silva" in text
+        assert "Financeiro" in text
 
     def test_numero_invalido_retorna_erro(self, agent):
         with patch("agents.whatsapp_agent.httpx.post") as mock_post:
-            result = agent.send_fallback_alert(phone_raw="abc", original_message="msg")
+            result = agent.send_attendant_notification("abc", "João", "5511987654321", "TI")
 
         assert result["success"] is False
         mock_post.assert_not_called()
 
-    def test_alerta_contem_intervencao(self, agent):
+
+class TestSendCloseConfirmation:
+    def test_mensagem_de_encerramento_enviada(self, agent):
         mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
         mock_resp.raise_for_status = MagicMock()
 
         with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
-            agent.send_fallback_alert(
-                phone_raw="11999990000",
-                original_message="mensagem teste",
-            )
+            result = agent.send_close_confirmation("11987654321")
 
+        assert result["success"] is True
         _, kwargs = mock_post.call_args
-        assert "INTERVENÇÃO" in kwargs["json"]["text"]
+        assert "encerrado" in kwargs["json"]["text"].lower() or "concluído" in kwargs["json"]["text"].lower()
+
+
+class TestSendTransferNotification:
+    def test_notificacao_contem_nome_do_setor_destino(self, agent):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("agents.whatsapp_agent.httpx.post", return_value=mock_resp) as mock_post:
+            result = agent.send_transfer_notification("11987654321", "Pedagógico")
+
+        assert result["success"] is True
+        _, kwargs = mock_post.call_args
+        assert "Pedagógico" in kwargs["json"]["text"]

@@ -14,14 +14,14 @@ from utils.settings_store import get_settings
 _wa = WhatsAppAgent()
 
 
-def _run_timeout_check() -> None:
+def _run_maintenance() -> None:
     runtime = get_settings()
     timeout_hours = int(runtime.get("conversation_timeout_hours", 24))
     cutoff = (datetime.now() - timedelta(hours=timeout_hours)).strftime("%Y-%m-%d %H:%M:%S")
-    close_cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    retention_cutoff = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d %H:%M:%S")
 
     with get_conn() as conn:
-        # A: fecha conversas em espera com tempo esgotado
+        # Fecha conversas em espera com tempo esgotado
         stale = conn.execute(
             "SELECT * FROM conversations WHERE status='waiting' AND updated_at < ?",
             (cutoff,),
@@ -34,20 +34,25 @@ def _run_timeout_check() -> None:
             )
             _wa.send_timeout(conv["contact_phone"])
 
-        # Fecha pending_close sem resposta após 2 horas (sem CSAT)
-        conn.execute(
-            "UPDATE conversations SET status='closed', "
-            "updated_at=datetime('now','localtime') "
-            "WHERE status='pending_close' AND updated_at < ?",
-            (close_cutoff,),
-        )
+        # Apaga mensagens e conversas fechadas com mais de 6 meses
+        old_convs = conn.execute(
+            "SELECT id FROM conversations WHERE status='closed' AND updated_at < ?",
+            (retention_cutoff,),
+        ).fetchall()
+        for conv in old_convs:
+            conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv["id"],))
+        if old_convs:
+            conn.execute(
+                "DELETE FROM conversations WHERE status='closed' AND updated_at < ?",
+                (retention_cutoff,),
+            )
 
 
-async def _timeout_checker() -> None:
+async def _maintenance_loop() -> None:
     while True:
         await asyncio.sleep(3600)
         try:
-            _run_timeout_check()
+            _run_maintenance()
         except Exception:
             pass
 
@@ -55,7 +60,7 @@ async def _timeout_checker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    task = asyncio.create_task(_timeout_checker())
+    task = asyncio.create_task(_maintenance_loop())
     try:
         yield
     finally:
@@ -66,7 +71,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="Batuira Bot", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Batuira Bot", version="2.0.0", lifespan=lifespan)
 
 _origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 _origins = [o.strip() for o in _origins_env.split(",") if o.strip()]

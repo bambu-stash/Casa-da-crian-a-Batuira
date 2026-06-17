@@ -68,6 +68,22 @@ CREATE TABLE IF NOT EXISTS conversation_transfers (
     created_at        TEXT DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS contacts (
+    phone         TEXT PRIMARY KEY,
+    name_override TEXT DEFAULT '',
+    notes         TEXT DEFAULT '',
+    updated_at    TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS quick_replies (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    shortcut   TEXT DEFAULT '',
+    active     INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS flows (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL DEFAULT 'Flow Principal',
@@ -98,6 +114,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("institution",  "sectors",       "'crianca'"),
         ("institution",  "conversations", "''"),
         ("csat_rating",  "conversations", "NULL"),
+        ("role",          "attendants",    "''"),
+        ("avatar_url",    "attendants",    "''"),
+        ("bio",           "attendants",    "''"),
+        ("password_hash", "attendants",    "''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT DEFAULT {default}")

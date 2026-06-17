@@ -1,50 +1,42 @@
 "use client";
 import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
-  ArrowLeft, Send, XCircle, RefreshCw, HandMetal,
-  Settings, ChevronDown, Search,
+  Send, XCircle, Search, ArrowRightLeft, Bell, BellOff,
+  ChevronRight, Settings, LogOut, Zap, X, User, FileText, Clock,
 } from "lucide-react";
 import AuthGuard from "@/components/AuthGuard";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { useAttendant } from "@/lib/attendantContext";
+import { signOut } from "@/lib/supabase";
 import {
-  getConversations, getMessages, getAttendants, getSectors, assignConversation,
-  replyConversation, closeConversation,
+  getConversations, getMessages, getAttendants, getSectors,
+  assignConversation, replyConversation, closeConversation, transferConversation,
+  getContact, patchContact, getContactHistory, getQuickReplies,
   type Conversation, type Message, type Attendant, type Sector,
+  type Contact, type QuickReply,
 } from "@/lib/api";
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-const LS_KEY = "batuira_atd_collapsed";
-
-// Palette para Casa da Criança Batuira (cores normais)
-const CRIANCA_PALETTE = [
-  { badge: "bg-blue-100 text-blue-700",      dot: "bg-blue-400"      },
-  { badge: "bg-violet-100 text-violet-700",  dot: "bg-violet-400"    },
-  { badge: "bg-emerald-100 text-emerald-700",dot: "bg-emerald-400"   },
-  { badge: "bg-orange-100 text-orange-700",  dot: "bg-orange-400"    },
-  { badge: "bg-teal-100 text-teal-700",      dot: "bg-teal-400"      },
-  { badge: "bg-amber-100 text-amber-700",    dot: "bg-amber-400"     },
-];
-
-// Palette para Casa da Mãe Batuira (tons rosa/pink)
-const MAE_PALETTE = [
-  { badge: "bg-pink-100 text-pink-700",      dot: "bg-pink-400"      },
-  { badge: "bg-rose-100 text-rose-700",      dot: "bg-rose-400"      },
-  { badge: "bg-fuchsia-100 text-fuchsia-700",dot: "bg-fuchsia-400"   },
-  { badge: "bg-pink-200 text-pink-800",      dot: "bg-pink-500"      },
-  { badge: "bg-rose-200 text-rose-800",      dot: "bg-rose-500"      },
-  { badge: "bg-fuchsia-200 text-fuchsia-800",dot: "bg-fuchsia-500"   },
-];
-
-const STATUS_CONFIG: Record<string, { dot: string; label: string }> = {
-  pending_institution: { dot: "bg-purple-400", label: "Aguard. Inst."  },
-  pending_menu:        { dot: "bg-sky-400",    label: "Novo"           },
-  waiting:             { dot: "bg-amber-400",  label: "Aguardando"     },
-  active:              { dot: "bg-green-400",  label: "Em atendimento" },
-  closed:              { dot: "bg-gray-300",   label: "Resolvido"      },
+const STATUS_ORDER: Record<string, number> = {
+  waiting: 0, pending_menu: 1, pending_institution: 2, active: 3, closed: 4,
 };
+
+const STATUS_CONFIG: Record<string, { dot: string; label: string; badge: string }> = {
+  pending_institution: { dot: "bg-purple-400", label: "Aguard. Inst.",  badge: "bg-purple-100 text-purple-700" },
+  pending_menu:        { dot: "bg-sky-400",    label: "Novo",           badge: "bg-sky-100 text-sky-700"      },
+  waiting:             { dot: "bg-amber-400",  label: "Aguardando",     badge: "bg-amber-100 text-amber-700"  },
+  active:              { dot: "bg-green-400",  label: "Em atendimento", badge: "bg-green-100 text-green-700"  },
+  closed:              { dot: "bg-gray-300",   label: "Resolvido",      badge: "bg-gray-100 text-gray-500"    },
+};
+
+const ATTENDANT_COLORS = [
+  "bg-blue-200 text-blue-800", "bg-violet-200 text-violet-800",
+  "bg-emerald-200 text-emerald-800", "bg-orange-200 text-orange-800",
+  "bg-teal-200 text-teal-800", "bg-pink-200 text-pink-800",
+];
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -58,11 +50,19 @@ function relativeTime(iso: string): string {
   return `há ${Math.floor(h / 24)}d`;
 }
 
+function waitingMinutes(iso: string): number {
+  return Math.floor((Date.now() - new Date(iso.replace(" ", "T")).getTime()) / 60000);
+}
+
+function displayName(conv: Conversation): string {
+  return conv.contact_name_override || conv.contact_name || conv.contact_phone;
+}
+
 function matchesSearch(conv: Conversation, q: string): boolean {
   if (!q) return true;
   const lq = q.toLowerCase();
   return (
-    (conv.contact_name ?? "").toLowerCase().includes(lq) ||
+    displayName(conv).toLowerCase().includes(lq) ||
     (conv.contact_phone ?? "").includes(lq) ||
     (conv.last_message ?? "").toLowerCase().includes(lq)
   );
@@ -80,7 +80,12 @@ export default function AtendimentoPage() {
 
 function AtendimentoInner() {
   const searchParams = useSearchParams();
-  const initialStatus = searchParams.get("status") ?? "waiting";
+  const router = useRouter();
+  const { profile } = useAttendant();
+  const initialConvId = searchParams.get("conv") ? Number(searchParams.get("conv")) : null;
+  const initialStatus = initialConvId ? "" : (searchParams.get("status") ?? "waiting");
+  const autoSelectedRef = useRef(false);
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected]           = useState<Conversation | null>(null);
   const [messages, setMessages]           = useState<Message[]>([]);
@@ -92,47 +97,39 @@ function AtendimentoInner() {
   const [filterStatus, setFilterStatus]   = useState<string>(initialStatus);
   const [search, setSearch]               = useState("");
   const [confirmClose, setConfirmClose]   = useState(false);
-  // collapsed: key = sector_id as string, value = true means closed
-  const [collapsed, setCollapsed]         = useState<Record<string, boolean>>({});
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [transferSectorId, setTransferSectorId] = useState<number | null>(null);
+  const [transferring, setTransferring]   = useState(false);
+  const [soundEnabled, setSoundEnabled]   = useState(true);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [contactPanelOpen, setContactPanelOpen] = useState(true);
+  const [quickReplies, setQuickReplies]   = useState<QuickReply[]>([]);
+  const [showQRPicker, setShowQRPicker]   = useState(false);
+  const [qrSearch, setQrSearch]           = useState("");
+
+  const bottomRef   = useRef<HTMLDivElement>(null);
   const prevUnreadRef = useRef<number>(0);
   const alertActiveRef = useRef<boolean>(false);
+  const audioRef    = useRef<HTMLAudioElement | null>(null);
 
-  // ── load & persist collapsed state ──────────────────────────────────────────
+  // ── init ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(LS_KEY);
-      if (stored) setCollapsed(JSON.parse(stored));
-    } catch { /* ignore */ }
+    audioRef.current = new Audio("/notification.wav");
+    const stored = localStorage.getItem("batuira_sound");
+    if (stored !== null) setSoundEnabled(stored === "true");
+    const cp = localStorage.getItem("batuira_contact_panel");
+    if (cp !== null) setContactPanelOpen(cp === "true");
   }, []);
 
-  const setCollapsedAndPersist = useCallback((next: Record<string, boolean>) => {
-    setCollapsed(next);
-    try { localStorage.setItem(LS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-  }, []);
-
-  const toggleSector = useCallback((id: string) => {
-    setCollapsed((prev) => {
-      const next = { ...prev, [id]: !prev[id] };
-      try { localStorage.setItem(LS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
+  useEffect(() => {
+    Promise.all([getAttendants(), getSectors(), getQuickReplies()]).then(([att, sec, qr]) => {
+      if (att) setAttendants(att);
+      if (sec) setSectors(sec.filter((s) => s.active));
+      if (qr) setQuickReplies(qr);
     });
   }, []);
 
-  // Keep the active sector open whenever selected conversation changes
-  useEffect(() => {
-    if (!selected?.sector_id) return;
-    const key = String(selected.sector_id);
-    setCollapsed((prev) => {
-      if (!prev[key]) return prev; // already open
-      const next = { ...prev, [key]: false };
-      try { localStorage.setItem(LS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
-  }, [selected?.sector_id]);
-
-  // ── data loading ─────────────────────────────────────────────────────────────
+  // ── data loading ──────────────────────────────────────────────────────────
 
   const loadConversations = useCallback(async () => {
     const params: Record<string, string | number> = {};
@@ -142,17 +139,20 @@ function AtendimentoInner() {
   }, [filterStatus]);
 
   useEffect(() => {
-    Promise.all([getAttendants(), getSectors()]).then(([att, sec]) => {
-      if (att) setAttendants(att);
-      if (sec) setSectors(sec.filter((s) => s.active));
-    });
-  }, []);
-
-  useEffect(() => {
     loadConversations();
     const t = setInterval(loadConversations, 4000);
     return () => clearInterval(t);
   }, [loadConversations]);
+
+  useEffect(() => {
+    if (!initialConvId || autoSelectedRef.current || conversations.length === 0) return;
+    const target = conversations.find((c) => c.id === initialConvId);
+    if (target) {
+      autoSelectedRef.current = true;
+      handleSelect(target);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations, initialConvId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -168,47 +168,41 @@ function AtendimentoInner() {
     return () => clearInterval(t);
   }, [selected?.id]);
 
-  // ── notification alert (title + favicon when tab is hidden) ─────────────────
+  // ── notification alert + sound ────────────────────────────────────────────
 
   useEffect(() => {
     const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
     const grew = totalUnread > prevUnreadRef.current;
     prevUnreadRef.current = totalUnread;
 
-    const setFavicon = (alert: boolean) => {
-      const link = document.querySelector<HTMLLinkElement>("link[rel~='icon']") ??
-        (() => {
-          const el = document.createElement("link");
-          el.rel = "icon";
-          document.head.appendChild(el);
-          return el;
-        })();
-      link.href = alert ? "/favicon-alert.svg?v=alert" : "/favicon.svg";
-      link.type = "image/svg+xml";
-    };
-
-    if (grew && document.visibilityState === "hidden") {
-      alertActiveRef.current = true;
-      document.title = `(${totalUnread}) Painel de Atendimento`;
-      setFavicon(true);
+    if (grew) {
+      if (soundEnabled && audioRef.current) {
+        audioRef.current.play().catch(() => {});
+      }
+      if (document.visibilityState === "hidden") {
+        alertActiveRef.current = true;
+        document.title = `(${totalUnread}) Painel de Atendimento`;
+      }
     }
 
     const clearAlert = () => {
       if (alertActiveRef.current) {
         alertActiveRef.current = false;
-        document.title = "Painel de Atendimento";
-        setFavicon(false);
+        document.title = "Casa da Criança Batuira";
       }
     };
 
     document.addEventListener("visibilitychange", clearAlert);
     return () => document.removeEventListener("visibilitychange", clearAlert);
-  }, [conversations]);
+  }, [conversations, soundEnabled]);
 
-  // ── actions ──────────────────────────────────────────────────────────────────
+  // ── actions ───────────────────────────────────────────────────────────────
 
   const handleSelect = async (conv: Conversation) => {
     setSelected(conv);
+    setTransferSectorId(null);
+    setShowQRPicker(false);
+    setQrSearch("");
     const msgs = await getMessages(conv.id);
     if (msgs) setMessages(msgs);
   };
@@ -230,14 +224,13 @@ function AtendimentoInner() {
     await replyConversation(selected.id, replyText.trim());
     setSending(false);
     setReplyText("");
+    setShowQRPicker(false);
     const msgs = await getMessages(selected.id);
     if (msgs) {
       setMessages(msgs);
       setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 60);
     }
   };
-
-  const handleClose = () => setConfirmClose(true);
 
   const handleCloseConfirmed = async () => {
     setConfirmClose(false);
@@ -247,7 +240,42 @@ function AtendimentoInner() {
     loadConversations();
   };
 
-  // ── derived ──────────────────────────────────────────────────────────────────
+  const handleTransfer = async () => {
+    if (!selected || !transferSectorId) return;
+    setTransferring(true);
+    const res = await transferConversation(selected.id, transferSectorId);
+    setTransferring(false);
+    if (res) {
+      setSelected(null);
+      setTransferSectorId(null);
+      loadConversations();
+    }
+  };
+
+  const toggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    localStorage.setItem("batuira_sound", String(next));
+  };
+
+  const toggleContactPanel = () => {
+    const next = !contactPanelOpen;
+    setContactPanelOpen(next);
+    localStorage.setItem("batuira_contact_panel", String(next));
+  };
+
+  const handleLogout = async () => {
+    await signOut();
+    router.replace("/login");
+  };
+
+  const insertQuickReply = (content: string) => {
+    setReplyText(content);
+    setShowQRPicker(false);
+    setQrSearch("");
+  };
+
+  // ── derived ───────────────────────────────────────────────────────────────
 
   const sectorAttendants = selected
     ? attendants.filter((a) => a.sector_id === selected.sector_id && a.active)
@@ -255,69 +283,34 @@ function AtendimentoInner() {
 
   const waitingTotal = conversations.filter((c) => c.status === "waiting").length;
 
-  // Conversas aguardando triagem (sem instituição definida ainda)
-  const triageConvs = conversations.filter(
-    (c) => matchesSearch(c, search) && c.status === "pending_institution"
-  );
+  const sortedConvs = [...conversations]
+    .filter((c) => matchesSearch(c, search))
+    .sort((a, b) => {
+      const so = (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5);
+      if (so !== 0) return so;
+      return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+    });
 
-  // Group conversations by sector_id; null/undefined go into "no_sector" (excludes triage)
-  const bySektor = new Map<number | null, Conversation[]>();
-  for (const conv of conversations) {
-    if (!matchesSearch(conv, search)) continue;
-    if (conv.status === "pending_institution") continue;
-    const key = conv.sector_id ?? null;
-    if (!bySektor.has(key)) bySektor.set(key, []);
-    bySektor.get(key)!.push(conv);
-  }
+  const transferableSectors = sectors.filter((s) => s.active && s.id !== selected?.sector_id);
 
-  const criancaSectors = sectors.filter((s) => s.institution === "crianca" || !s.institution);
-  const maeSectors     = sectors.filter((s) => s.institution === "mae");
+  const filteredQR = quickReplies.filter((qr) => {
+    const q = qrSearch.toLowerCase();
+    if (!q) return true;
+    return qr.title.toLowerCase().includes(q) || qr.shortcut.toLowerCase().includes(q) || qr.content.toLowerCase().includes(q);
+  });
 
-  // When searching, treat all sectors as expanded
-  const isOpen = (id: string) => search.trim() !== "" || !collapsed[id];
+  const qrTrigger = replyText.startsWith("/");
 
-  // ── render ────────────────────────────────────────────────────────────────────
+  // ── render ────────────────────────────────────────────────────────────────
 
   return (
     <AuthGuard>
-      <main className="h-screen bg-gray-50 flex flex-col">
-
-        {/* top bar */}
-        <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 shrink-0">
-          <Link href="/" className="text-gray-400 hover:text-gray-700 transition">
-            <ArrowLeft className="w-4 h-4" />
-          </Link>
-          <h1 className="text-sm font-bold text-gray-900">Painel de Atendimento</h1>
-          {waitingTotal > 0 && filterStatus !== "waiting" && (
-            <span className="text-xs bg-amber-100 text-amber-700 font-semibold px-2 py-0.5 rounded-full">
-              {waitingTotal} aguardando
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-2">
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">Todos os status</option>
-              <option value="pending_institution">Triagem</option>
-              <option value="waiting">Aguardando</option>
-              <option value="active">Em atendimento</option>
-              <option value="closed">Encerradas</option>
-            </select>
-            <button onClick={loadConversations} className="text-gray-400 hover:text-gray-700 transition p-1" title="Atualizar">
-              <RefreshCw className="w-4 h-4" />
-            </button>
-            <Link href="/configuracoes" className="text-gray-400 hover:text-gray-700 transition p-1" title="Configurações">
-              <Settings className="w-4 h-4" />
-            </Link>
-          </div>
-        </header>
+      <main className="h-screen bg-gray-50 flex flex-col overflow-hidden">
 
         {confirmClose && selected && (
           <ConfirmDialog
             title="Encerrar atendimento?"
-            message={`Encerrar a conversa de ${selected.contact_name || selected.contact_phone}? Esta ação não pode ser desfeita.`}
+            message={`Encerrar a conversa de ${displayName(selected)}? O contato receberá uma mensagem de encerramento.`}
             confirmLabel="Encerrar"
             danger
             onConfirm={handleCloseConfirmed}
@@ -325,138 +318,160 @@ function AtendimentoInner() {
           />
         )}
 
+        {/* ── TopNav ─────────────────────────────────────────────────────── */}
+        <header className="bg-white border-b border-gray-100 px-4 py-2.5 flex items-center gap-3 shrink-0 z-10">
+          <Link href="/" className="flex items-center gap-2">
+            <span className="text-sm font-bold text-gray-900">🏠 Batuira</span>
+          </Link>
+
+          <div className="flex-1" />
+
+          {waitingTotal > 0 && (
+            <span className="text-xs bg-amber-100 text-amber-700 font-semibold px-2.5 py-1 rounded-full">
+              {waitingTotal} aguardando
+            </span>
+          )}
+
+          <button
+            onClick={toggleSound}
+            className="text-gray-400 hover:text-gray-600 transition p-1"
+            title={soundEnabled ? "Silenciar notificações" : "Ativar som"}
+          >
+            {soundEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+          </button>
+
+          <div className="relative">
+            <button
+              onClick={() => setShowProfileMenu((p) => !p)}
+              className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 transition px-2 py-1 rounded-lg hover:bg-gray-50"
+            >
+              <span className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-xs">
+                {profile?.name?.charAt(0).toUpperCase() ?? "?"}
+              </span>
+              <span className="hidden sm:block font-medium">{profile?.name ?? "Meu perfil"}</span>
+            </button>
+
+            {showProfileMenu && (
+              <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
+                <Link
+                  href="/configuracoes"
+                  className="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => setShowProfileMenu(false)}
+                >
+                  <Settings className="w-4 h-4" /> Configurações
+                </Link>
+                <button
+                  onClick={handleLogout}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
+                >
+                  <LogOut className="w-4 h-4" /> Sair
+                </button>
+              </div>
+            )}
+          </div>
+        </header>
+
         <div className="flex flex-1 min-h-0">
 
-          {/* ── sidebar ────────────────────────────────────────────────────── */}
+          {/* ── FlatSidebar ─────────────────────────────────────────────── */}
           <aside className="w-72 shrink-0 border-r border-gray-100 bg-white flex flex-col overflow-hidden">
 
-            {/* search bar */}
-            <div className="px-3 py-2.5 border-b border-gray-100 shrink-0">
+            <div className="px-3 py-2.5 border-b border-gray-100 shrink-0 space-y-2">
               <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
                 <Search className="w-3.5 h-3.5 text-gray-400 shrink-0" />
                 <input
                   type="text"
-                  placeholder="Buscar por nome ou mensagem…"
+                  placeholder="Buscar…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="bg-transparent text-xs text-gray-700 placeholder-gray-400 outline-none w-full"
                 />
                 {search && (
-                  <button onClick={() => setSearch("")} className="text-gray-400 hover:text-gray-600 shrink-0 text-xs leading-none">
-                    ×
-                  </button>
+                  <button onClick={() => setSearch("")} className="text-gray-400 hover:text-gray-600 shrink-0 text-xs leading-none">×</button>
                 )}
               </div>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">Todos</option>
+                <option value="pending_institution">Triagem</option>
+                <option value="waiting">Aguardando</option>
+                <option value="active">Em atendimento</option>
+                <option value="closed">Encerradas</option>
+              </select>
             </div>
 
-            {/* sector groups — divided by institution */}
             <div className="overflow-y-auto flex-1">
-
-              {/* ── Aguardando Triagem ── */}
-              {triageConvs.length > 0 && (
-                <SectorGroup
-                  sectorKey="triage"
-                  label="⏳ Aguardando Triagem"
-                  conversations={triageConvs}
-                  palette={{ badge: "bg-purple-100 text-purple-700", dot: "bg-purple-400" }}
-                  open={isOpen("triage")}
-                  selectedId={selected?.id ?? null}
-                  onToggle={() => toggleSector("triage")}
-                  onSelect={handleSelect}
+              {sortedConvs.length === 0 && (
+                <p className="p-6 text-center text-xs text-gray-400">Nenhuma conversa encontrada.</p>
+              )}
+              {sortedConvs.map((conv) => (
+                <FlatConvItem
+                  key={conv.id}
+                  conv={conv}
+                  selected={conv.id === selected?.id}
+                  onSelect={() => handleSelect(conv)}
                 />
-              )}
-
-              {/* ── Casa da Criança Batuira ── */}
-              <div className="px-3 pt-3 pb-1">
-                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
-                  🏠 Casa da Criança Batuira
-                </p>
-              </div>
-              {criancaSectors.map((sector, idx) => {
-                const sectorKey = String(sector.id);
-                const convs = bySektor.get(sector.id) ?? [];
-                const palette = CRIANCA_PALETTE[idx % CRIANCA_PALETTE.length];
-                return (
-                  <SectorGroup
-                    key={sector.id}
-                    sectorKey={sectorKey}
-                    label={`${sector.emoji} ${sector.name}`}
-                    conversations={convs}
-                    palette={palette}
-                    open={isOpen(sectorKey)}
-                    selectedId={selected?.id ?? null}
-                    onToggle={() => toggleSector(sectorKey)}
-                    onSelect={handleSelect}
-                  />
-                );
-              })}
-
-              {/* ── Casa da Mãe Batuira ── */}
-              <div className="px-3 pt-4 pb-1 border-t border-pink-100 mt-1">
-                <p className="text-[10px] font-bold text-pink-600 uppercase tracking-wider">
-                  💗 Casa da Mãe Batuira
-                </p>
-              </div>
-              {maeSectors.map((sector, idx) => {
-                const sectorKey = String(sector.id);
-                const convs = bySektor.get(sector.id) ?? [];
-                const palette = MAE_PALETTE[idx % MAE_PALETTE.length];
-                return (
-                  <SectorGroup
-                    key={sector.id}
-                    sectorKey={sectorKey}
-                    label={`${sector.emoji} ${sector.name}`}
-                    conversations={convs}
-                    palette={palette}
-                    open={isOpen(sectorKey)}
-                    selectedId={selected?.id ?? null}
-                    onToggle={() => toggleSector(sectorKey)}
-                    onSelect={handleSelect}
-                    isMae
-                  />
-                );
-              })}
-
-              {/* "Sem setor" bucket for conversations without sector_id */}
-              {(bySektor.get(null)?.length ?? 0) > 0 && (
-                <SectorGroup
-                  sectorKey="null"
-                  label="📋 Sem setor"
-                  conversations={bySektor.get(null) ?? []}
-                  palette={{ badge: "bg-gray-100 text-gray-600", dot: "bg-gray-400" }}
-                  open={isOpen("null")}
-                  selectedId={selected?.id ?? null}
-                  onToggle={() => toggleSector("null")}
-                  onSelect={handleSelect}
-                />
-              )}
-
-              {conversations.length === 0 && (
-                <p className="p-6 text-center text-xs text-gray-400">
-                  Nenhuma conversa encontrada.
-                </p>
-              )}
+              ))}
             </div>
           </aside>
 
-          {/* ── chat area ──────────────────────────────────────────────────── */}
-          <section className="flex-1 flex flex-col min-h-0 min-w-0">
+          {/* ── Chat area ────────────────────────────────────────────────── */}
+          <section className="flex-1 flex min-h-0 min-w-0">
             {!selected ? (
-              <EmptyState />
+              <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-400">
+                <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center text-2xl">💬</div>
+                <p className="text-sm">Selecione uma conversa para atender</p>
+              </div>
             ) : (
-              <ChatView
-                conv={selected}
-                messages={messages}
-                sectorAttendants={sectorAttendants}
-                replyText={replyText}
-                sending={sending}
-                assigning={assigning}
-                bottomRef={bottomRef}
-                onReplyChange={setReplyText}
-                onReply={handleReply}
-                onAssign={handleAssign}
-                onClose={handleClose}
-              />
+              <>
+                <div className="flex-1 flex flex-col min-h-0">
+                  <ChatView
+                    conv={selected}
+                    messages={messages}
+                    sectorAttendants={sectorAttendants}
+                    transferableSectors={transferableSectors}
+                    replyText={replyText}
+                    sending={sending}
+                    assigning={assigning}
+                    transferSectorId={transferSectorId}
+                    transferring={transferring}
+                    bottomRef={bottomRef}
+                    showQRPicker={showQRPicker || qrTrigger}
+                    qrSearch={qrTrigger ? replyText.slice(1) : qrSearch}
+                    filteredQR={qrTrigger
+                      ? quickReplies.filter((qr) => qr.shortcut.toLowerCase().startsWith(replyText.slice(1).toLowerCase()) || qr.title.toLowerCase().includes(replyText.slice(1).toLowerCase()))
+                      : filteredQR
+                    }
+                    contactPanelOpen={contactPanelOpen}
+                    onReplyChange={(v) => {
+                      setReplyText(v);
+                      if (!v.startsWith("/")) setShowQRPicker(false);
+                    }}
+                    onReply={handleReply}
+                    onAssign={handleAssign}
+                    onClose={() => setConfirmClose(true)}
+                    onTransferSectorChange={setTransferSectorId}
+                    onTransfer={handleTransfer}
+                    onToggleQRPicker={() => { setShowQRPicker((p) => !p); setQrSearch(""); }}
+                    onQrSearchChange={setQrSearch}
+                    onInsertQR={insertQuickReply}
+                    onToggleContactPanel={toggleContactPanel}
+                  />
+                </div>
+
+                {/* ── ContactPanel ────────────────────────────────────── */}
+                {contactPanelOpen && (
+                  <ContactPanel
+                    conv={selected}
+                    onNameChange={(name) => setConversations((prev) =>
+                      prev.map((c) => c.id === selected.id ? { ...c, contact_name_override: name } : c)
+                    )}
+                  />
+                )}
+              </>
             )}
           </section>
         </div>
@@ -465,130 +480,55 @@ function AtendimentoInner() {
   );
 }
 
-// ── SectorGroup ───────────────────────────────────────────────────────────────
+// ── FlatConvItem ──────────────────────────────────────────────────────────────
 
-function SectorGroup({
-  sectorKey, label, conversations, palette, open, selectedId, onToggle, onSelect, isMae,
-}: {
-  sectorKey: string;
-  label: string;
-  conversations: Conversation[];
-  palette: { badge: string; dot: string };
-  open: boolean;
-  selectedId: number | null;
-  onToggle: () => void;
-  onSelect: (c: Conversation) => void;
-  isMae?: boolean;
+function FlatConvItem({ conv, selected, onSelect }: {
+  conv: Conversation; selected: boolean; onSelect: () => void;
 }) {
-  return (
-    <div className={`border-b ${isMae ? "border-pink-50" : "border-gray-50"}`}>
-      {/* header */}
-      <button
-        onClick={onToggle}
-        className={`w-full flex items-center gap-2 px-3 py-2.5 transition text-left ${
-          isMae ? "hover:bg-pink-50" : "hover:bg-gray-50"
-        }`}
-      >
-        <ChevronDown
-          className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${isMae ? "text-pink-300" : "text-gray-400"}`}
-          style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}
-        />
-        <span className={`text-xs font-semibold flex-1 truncate ${isMae ? "text-pink-700" : "text-gray-700"}`}>{label}</span>
-        {conversations.length > 0 && (
-          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${palette.badge}`}>
-            {conversations.length}
-          </span>
-        )}
-      </button>
-
-      {/* collapsible list — CSS grid rows animation */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateRows: open ? "1fr" : "0fr",
-          transition: "grid-template-rows 200ms ease",
-        }}
-      >
-        <div className="overflow-hidden">
-          {conversations.length === 0 ? (
-            <p className={`px-4 py-3 text-[11px] italic ${isMae ? "text-pink-300" : "text-gray-400"}`}>
-              Nenhuma conversa neste setor.
-            </p>
-          ) : (
-            conversations.map((conv) => (
-              <ConvItem
-                key={conv.id}
-                conv={conv}
-                selected={conv.id === selectedId}
-                dotColor={palette.dot}
-                onSelect={() => onSelect(conv)}
-              />
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── ConvItem ──────────────────────────────────────────────────────────────────
-
-function ConvItem({
-  conv, selected, dotColor, onSelect,
-}: {
-  conv: Conversation;
-  selected: boolean;
-  dotColor: string;
-  onSelect: () => void;
-}) {
-  const status = STATUS_CONFIG[conv.status] ?? { dot: "bg-gray-300", label: conv.status };
-  const waitMinutes = Math.floor(
-    (Date.now() - new Date(conv.updated_at.replace(" ", "T")).getTime()) / 60000
-  );
-  const isUrgent = conv.status === "waiting" && waitMinutes >= 10;
+  const status = STATUS_CONFIG[conv.status] ?? { dot: "bg-gray-300", label: conv.status, badge: "bg-gray-100 text-gray-500" };
+  const mins = waitingMinutes(conv.updated_at);
+  const isUrgent = conv.status === "waiting" && mins >= 10;
+  const name = displayName(conv);
+  const attColor = conv.attendant_id ? ATTENDANT_COLORS[conv.attendant_id % ATTENDANT_COLORS.length] : "";
+  const isMae = conv.institution === "mae" || conv.sector_institution === "mae";
 
   return (
     <button
       onClick={onSelect}
-      className={`w-full text-left px-4 py-2.5 border-b border-gray-50 hover:bg-gray-50 transition ${
-        selected ? "bg-blue-50 border-l-2 border-l-blue-500" : "border-l-2 border-l-transparent"
+      className={`w-full text-left px-3 py-3 border-b border-gray-50 transition ${
+        selected ? "bg-blue-50 border-l-2 border-l-blue-500" : "border-l-2 border-l-transparent hover:bg-gray-50"
       }`}
     >
-      <div className="flex items-center gap-2">
-        {/* sector color dot */}
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
-
+      <div className="flex items-start gap-2.5">
+        <div className="mt-0.5 shrink-0 flex flex-col items-center gap-1">
+          <span className={`w-2 h-2 rounded-full ${status.dot}`} />
+          {isMae && <span className="text-[8px] text-pink-400">♀</span>}
+        </div>
         <div className="flex-1 min-w-0">
-          {/* row 1: name + time */}
-          <div className="flex items-baseline justify-between gap-1">
-            <p className="text-xs font-semibold text-gray-800 truncate leading-tight">
-              {conv.contact_name || conv.contact_phone}
-            </p>
-            <div className="flex items-center gap-1 shrink-0">
-              {conv.unread_count > 0 && (
-                <span className="bg-blue-500 text-white text-[9px] font-bold min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center">
-                  {conv.unread_count > 9 ? "9+" : conv.unread_count}
-                </span>
-              )}
-              <span className={`text-[10px] font-medium ${isUrgent ? "text-red-500" : "text-gray-400"}`}>
-                {relativeTime(conv.updated_at)}
-              </span>
-            </div>
+          <div className="flex items-baseline justify-between gap-1 mb-0.5">
+            <p className="text-xs font-semibold text-gray-800 truncate">{name}</p>
+            <span className={`text-[10px] font-medium shrink-0 ${isUrgent ? "text-red-500" : "text-gray-400"}`}>
+              {relativeTime(conv.updated_at)}
+            </span>
           </div>
 
-          {/* row 2: message preview */}
           {conv.last_message && (
-            <p className="text-[11px] text-gray-400 truncate mt-0.5 leading-tight">
-              {conv.last_message}
-            </p>
+            <p className="text-[11px] text-gray-400 truncate">{conv.last_message}</p>
           )}
 
-          {/* row 3: status dot + label */}
-          <div className="flex items-center gap-1 mt-1">
-            <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
-            <span className="text-[10px] text-gray-500">{status.label}</span>
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${status.badge}`}>
+              {status.label}
+            </span>
             {conv.attendant_name && conv.status === "active" && (
-              <span className="text-[10px] text-blue-400 truncate ml-1">· {conv.attendant_name}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${attColor}`}>
+                → {conv.attendant_name}
+              </span>
+            )}
+            {conv.unread_count > 0 && (
+              <span className="bg-blue-500 text-white text-[9px] font-bold min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center ml-auto">
+                {conv.unread_count > 9 ? "9+" : conv.unread_count}
+              </span>
             )}
           </div>
         </div>
@@ -597,90 +537,125 @@ function ConvItem({
   );
 }
 
-// ── StatusPill (used in ChatView header) ──────────────────────────────────────
-
-function StatusPill({ status }: { status: string }) {
-  const cfg = STATUS_CONFIG[status];
-  const styles: Record<string, string> = {
-    pending_institution: "bg-purple-50 text-purple-600",
-    pending_menu:        "bg-sky-50 text-sky-600",
-    waiting:             "bg-amber-50 text-amber-700",
-    active:              "bg-green-50 text-green-700",
-    closed:              "bg-gray-100 text-gray-500",
-  };
-  return (
-    <span className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium ${styles[status] ?? "bg-gray-100 text-gray-500"}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${cfg?.dot ?? "bg-gray-400"}`} />
-      {cfg?.label ?? status}
-    </span>
-  );
-}
-
-// ── EmptyState ────────────────────────────────────────────────────────────────
-
-function EmptyState() {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-400">
-      <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center text-2xl">💬</div>
-      <p className="text-sm">Selecione uma conversa para atender</p>
-    </div>
-  );
-}
-
 // ── ChatView ──────────────────────────────────────────────────────────────────
 
 function ChatView({
-  conv, messages, sectorAttendants, replyText, sending, assigning,
-  bottomRef, onReplyChange, onReply, onAssign, onClose,
+  conv, messages, sectorAttendants, transferableSectors, replyText, sending, assigning,
+  transferSectorId, transferring, bottomRef, showQRPicker, qrSearch, filteredQR,
+  contactPanelOpen,
+  onReplyChange, onReply, onAssign, onClose, onTransferSectorChange, onTransfer,
+  onToggleQRPicker, onQrSearchChange, onInsertQR, onToggleContactPanel,
 }: {
   conv: Conversation;
   messages: Message[];
   sectorAttendants: Attendant[];
+  transferableSectors: Sector[];
   replyText: string;
   sending: boolean;
   assigning: number | null;
+  transferSectorId: number | null;
+  transferring: boolean;
   bottomRef: React.RefObject<HTMLDivElement>;
+  showQRPicker: boolean;
+  qrSearch: string;
+  filteredQR: QuickReply[];
+  contactPanelOpen: boolean;
   onReplyChange: (v: string) => void;
   onReply: () => void;
   onAssign: (id: number) => void;
   onClose: () => void;
+  onTransferSectorChange: (id: number | null) => void;
+  onTransfer: () => void;
+  onToggleQRPicker: () => void;
+  onQrSearchChange: (v: string) => void;
+  onInsertQR: (content: string) => void;
+  onToggleContactPanel: () => void;
 }) {
   const canReply = conv.status === "active";
+  const mins = waitingMinutes(conv.updated_at);
+  const isUrgent = conv.status === "waiting" && mins >= 10;
+  const status = STATUS_CONFIG[conv.status];
 
   return (
     <>
       {/* header */}
-      <div className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 shrink-0">
+      <div className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-2 shrink-0">
         <div className="flex-1 min-w-0">
-          <p className="font-semibold text-gray-900 text-sm">
-            {conv.contact_name || conv.contact_phone}
-          </p>
+          <p className="font-semibold text-gray-900 text-sm truncate">{displayName(conv)}</p>
           <p className="text-xs text-gray-400 truncate">
             {conv.institution === "mae"
               ? <span className="text-pink-500 font-medium">💗 Casa da Mãe</span>
               : <span className="text-blue-500 font-medium">🏠 Casa da Criança</span>}
             {conv.sector_name && <span> · {conv.sector_emoji} {conv.sector_name}</span>}
-            {conv.contact_name && <span className="ml-1 text-gray-300">· {conv.contact_phone}</span>}
+            {conv.contact_name && <span className="text-gray-300 ml-1">· {conv.contact_phone}</span>}
           </p>
         </div>
-        <StatusPill status={conv.status} />
+
+        {/* status pill */}
+        <span className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 ${status?.badge ?? "bg-gray-100 text-gray-500"}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${status?.dot ?? "bg-gray-400"}`} />
+          {status?.label ?? conv.status}
+        </span>
+
+        {/* Tempo de espera */}
+        {conv.status === "waiting" && (
+          <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${
+            isUrgent ? "bg-red-100 text-red-600" : "bg-amber-50 text-amber-600"
+          }`}>
+            <Clock className="w-3 h-3" />
+            {mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h`}
+          </span>
+        )}
+
+        {/* Transferir */}
+        {conv.status !== "closed" && transferableSectors.length > 0 && (
+          <div className="flex items-center gap-1 shrink-0">
+            <select
+              value={transferSectorId ?? ""}
+              onChange={(e) => onTransferSectorChange(e.target.value ? Number(e.target.value) : null)}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[120px]"
+            >
+              <option value="">Transferir…</option>
+              {transferableSectors.map((s) => (
+                <option key={s.id} value={s.id}>{s.emoji} {s.name}</option>
+              ))}
+            </select>
+            {transferSectorId && (
+              <button
+                onClick={onTransfer}
+                disabled={transferring}
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+                {transferring ? "…" : "OK"}
+              </button>
+            )}
+          </div>
+        )}
+
         {conv.status !== "closed" && (
           <button
             onClick={onClose}
-            className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition"
+            className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition shrink-0"
           >
             <XCircle className="w-3.5 h-3.5" />
             Encerrar
           </button>
         )}
+
+        <button
+          onClick={onToggleContactPanel}
+          title={contactPanelOpen ? "Fechar painel" : "Abrir painel de contato"}
+          className="text-gray-400 hover:text-gray-600 transition shrink-0"
+        >
+          <ChevronRight className={`w-4 h-4 transition-transform ${contactPanelOpen ? "" : "rotate-180"}`} />
+        </button>
       </div>
 
       {/* waiting — assign banner */}
       {conv.status === "waiting" && (
         <div className="bg-amber-50 border-b border-amber-100 px-4 py-3 shrink-0">
-          <p className="text-xs font-semibold text-amber-700 mb-2">
-            ⏳ Aguardando atendente — quem vai assumir?
-          </p>
+          <p className="text-xs font-semibold text-amber-700 mb-2">⏳ Aguardando atendente — quem vai assumir?</p>
           {sectorAttendants.length === 0 ? (
             <p className="text-xs text-amber-600">
               Nenhum atendente ativo neste setor.{" "}
@@ -693,10 +668,17 @@ function ChatView({
                   key={a.id}
                   onClick={() => onAssign(a.id)}
                   disabled={assigning !== null}
-                  className="flex items-center gap-1.5 text-xs font-medium bg-white border border-amber-200 text-amber-800 hover:bg-amber-100 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+                  className="flex items-center gap-2 text-xs font-medium bg-white border border-amber-200 text-amber-800 hover:bg-amber-100 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
                 >
-                  <HandMetal className="w-3.5 h-3.5" />
+                  {a.avatar_url ? (
+                    <img src={a.avatar_url} alt={a.name} className="w-5 h-5 rounded-full object-cover" />
+                  ) : (
+                    <span className="w-5 h-5 rounded-full bg-amber-200 text-amber-800 flex items-center justify-center font-bold text-[10px]">
+                      {a.name.charAt(0).toUpperCase()}
+                    </span>
+                  )}
                   {assigning === a.id ? "Assumindo…" : `Assumir como ${a.name}`}
+                  {a.role && <span className="text-amber-500 font-normal">· {a.role}</span>}
                 </button>
               ))}
             </div>
@@ -706,22 +688,23 @@ function ChatView({
 
       {/* active — attendant bar */}
       {conv.status === "active" && conv.attendant_name && (
-        <div className="bg-green-50 border-b border-green-100 px-4 py-2 shrink-0">
+        <div className="bg-green-50 border-b border-green-100 px-4 py-2 shrink-0 flex items-center gap-2">
+          <span className="w-5 h-5 rounded-full bg-green-200 text-green-800 flex items-center justify-center font-bold text-[10px]">
+            {conv.attendant_name.charAt(0).toUpperCase()}
+          </span>
           <p className="text-xs text-green-700">
-            <span className="font-semibold">👤 {conv.attendant_name}</span> está atendendo
+            <span className="font-semibold">{conv.attendant_name}</span> está atendendo
             {conv.sector_name && ` · ${conv.sector_emoji} ${conv.sector_name}`}
           </p>
         </div>
       )}
 
-      {/* pending_institution — bot bar */}
       {conv.status === "pending_institution" && (
         <div className="bg-purple-50 border-b border-purple-100 px-4 py-2 shrink-0">
           <p className="text-xs text-purple-600">🤖 Bot aguardando contato escolher a instituição.</p>
         </div>
       )}
 
-      {/* pending_menu — bot bar */}
       {conv.status === "pending_menu" && (
         <div className="bg-gray-50 border-b border-gray-100 px-4 py-2 shrink-0">
           <p className="text-xs text-gray-500">
@@ -759,25 +742,74 @@ function ChatView({
           Conversa encerrada
         </div>
       ) : canReply ? (
-        <div className="bg-white border-t border-gray-100 p-3 flex gap-2 shrink-0">
-          <textarea
-            value={replyText}
-            onChange={(e) => onReplyChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onReply(); }
-            }}
-            placeholder="Digite sua resposta… (Enter para enviar, Shift+Enter para quebra de linha)"
-            rows={2}
-            className="flex-1 resize-none border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <button
-            onClick={onReply}
-            disabled={sending || !replyText.trim()}
-            className="self-end flex items-center gap-1.5 bg-blue-600 text-white px-3 py-2 rounded-xl text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition"
-          >
-            <Send className="w-4 h-4" />
-            {sending ? "…" : "Enviar"}
-          </button>
+        <div className="bg-white border-t border-gray-100 p-3 shrink-0 relative">
+          {/* Quick replies picker */}
+          {(showQRPicker) && (
+            <div className="absolute bottom-full left-3 right-3 mb-2 bg-white rounded-xl shadow-lg border border-gray-200 max-h-60 overflow-hidden flex flex-col z-20">
+              <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100">
+                <Search className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                <input
+                  autoFocus
+                  value={qrSearch}
+                  onChange={(e) => onQrSearchChange(e.target.value)}
+                  placeholder="Buscar resposta rápida…"
+                  className="text-xs text-gray-700 outline-none flex-1 placeholder-gray-400"
+                />
+                <button onClick={() => { onQrSearchChange(""); onToggleQRPicker(); }} className="text-gray-400 hover:text-gray-600">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="overflow-y-auto">
+                {filteredQR.length === 0 && (
+                  <p className="px-4 py-3 text-xs text-gray-400">Nenhuma resposta encontrada.</p>
+                )}
+                {filteredQR.map((qr) => (
+                  <button
+                    key={qr.id}
+                    onClick={() => onInsertQR(qr.content)}
+                    className="w-full text-left px-4 py-2.5 hover:bg-gray-50 border-b border-gray-50 last:border-0"
+                  >
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-xs font-semibold text-gray-800">{qr.title}</span>
+                      {qr.shortcut && (
+                        <code className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-mono">{qr.shortcut}</code>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-gray-400 truncate">{qr.content}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2 items-end">
+            <button
+              onClick={onToggleQRPicker}
+              title="Respostas rápidas"
+              className={`p-2 rounded-lg transition shrink-0 ${showQRPicker ? "bg-blue-100 text-blue-600" : "text-gray-400 hover:text-gray-600 hover:bg-gray-100"}`}
+            >
+              <Zap className="w-4 h-4" />
+            </button>
+            <textarea
+              value={replyText}
+              onChange={(e) => onReplyChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onReply(); }
+                if (e.key === "Escape") { onQrSearchChange(""); }
+              }}
+              placeholder="Digite sua resposta… (/ para respostas rápidas)"
+              rows={2}
+              className="flex-1 resize-none border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={onReply}
+              disabled={sending || !replyText.trim()}
+              className="self-end flex items-center gap-1.5 bg-blue-600 text-white px-3 py-2 rounded-xl text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition shrink-0"
+            >
+              <Send className="w-4 h-4" />
+              {sending ? "…" : "Enviar"}
+            </button>
+          </div>
         </div>
       ) : (
         <div className="bg-gray-50 border-t border-gray-100 px-4 py-3 text-center text-xs text-gray-400 shrink-0">
@@ -785,5 +817,115 @@ function ChatView({
         </div>
       )}
     </>
+  );
+}
+
+// ── ContactPanel ──────────────────────────────────────────────────────────────
+
+function ContactPanel({ conv, onNameChange }: {
+  conv: Conversation;
+  onNameChange: (name: string) => void;
+}) {
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [history, setHistory] = useState<Conversation[]>([]);
+  const [nameVal, setNameVal] = useState("");
+  const [notesVal, setNotesVal] = useState("");
+
+  useEffect(() => {
+    setContact(null);
+    setHistory([]);
+    Promise.all([getContact(conv.contact_phone), getContactHistory(conv.contact_phone)]).then(([c, h]) => {
+      if (c) {
+        setContact(c);
+        setNameVal(c.name_override ?? "");
+        setNotesVal(c.notes ?? "");
+      }
+      if (h) setHistory(h);
+    });
+  }, [conv.contact_phone]);
+
+  const saveNameOverride = async () => {
+    const val = nameVal.trim();
+    await patchContact(conv.contact_phone, { name_override: val });
+    onNameChange(val);
+  };
+
+  const saveNotes = async () => {
+    await patchContact(conv.contact_phone, { notes: notesVal });
+  };
+
+  return (
+    <aside className="w-72 shrink-0 border-l border-gray-100 bg-white flex flex-col overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 shrink-0">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-sm">
+            {(conv.contact_name || conv.contact_phone).charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-900 truncate">
+              {conv.contact_name_override || conv.contact_name || conv.contact_phone}
+            </p>
+            <p className="text-xs text-gray-400">{conv.contact_phone}</p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="flex items-center gap-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
+              <User className="w-3 h-3" /> Apelido / Nome salvo
+            </label>
+            <input
+              type="text"
+              value={nameVal}
+              onChange={(e) => setNameVal(e.target.value)}
+              onBlur={saveNameOverride}
+              placeholder={conv.contact_name || "Nome do contato"}
+              className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="flex items-center gap-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
+              <FileText className="w-3 h-3" /> Notas internas
+            </label>
+            <textarea
+              value={notesVal}
+              onChange={(e) => setNotesVal(e.target.value)}
+              onBlur={saveNotes}
+              placeholder="Observações sobre este contato…"
+              rows={3}
+              className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-4 py-3">
+          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2 flex items-center gap-1">
+            <Clock className="w-3 h-3" /> Histórico de atendimentos
+          </p>
+          {history.length === 0 ? (
+            <p className="text-xs text-gray-400 italic">Nenhum atendimento anterior.</p>
+          ) : (
+            <div className="space-y-2">
+              {history.map((h) => (
+                <div key={h.id} className="bg-gray-50 rounded-lg px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="text-gray-500">{h.created_at?.slice(0, 10)}</span>
+                    {h.sector_name && (
+                      <span className="text-gray-400">{h.sector_emoji} {h.sector_name}</span>
+                    )}
+                  </div>
+                  {h.attendant_name && (
+                    <p className="text-gray-600 font-medium">{h.attendant_name}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </aside>
   );
 }

@@ -1,10 +1,12 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
+
     # Evolution API (WhatsApp)
     evolution_api_url: str = "http://localhost:8080"
     evolution_api_key: str = ""
@@ -17,9 +19,7 @@ class Settings(BaseSettings):
     # Supabase (auth)
     supabase_url: str = ""
     supabase_jwt_secret: str = ""
-
-    class Config:
-        env_file = BASE_DIR / ".env"
+    supabase_service_key: str = ""  # service_role key — necessário para criar usuários via Admin API
 
 
 settings = Settings()

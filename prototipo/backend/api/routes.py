@@ -2,7 +2,6 @@
 Rotas da API — Casa da Criança Batuira Bot.
 """
 import hashlib
-import json
 import secrets
 from datetime import datetime
 from typing import Annotated
@@ -12,12 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from agents.whatsapp_agent import WhatsAppAgent
+from config import settings
 from database import get_conn
-from engine.flow_engine import FlowEngine
-from utils.auth import require_auth
+from utils.auth import require_auth, create_local_token
 from utils.api_keys import get_evolution_key, get_evolution_url, get_evolution_instance
 from utils.settings_store import get_settings, update_settings
-from config import settings
 
 router = APIRouter(prefix="/api")
 wa = WhatsAppAgent()
@@ -74,10 +72,28 @@ class ApiKeyBody(BaseModel):
     user_email: str
 
 
-class FlowBody(BaseModel):
-    name: str = "Flow Principal"
-    nodes: list = []
-    edges: list = []
+class ContactPatch(BaseModel):
+    name_override: str | None = None
+    notes: str | None = None
+
+
+class QuickReplyBody(BaseModel):
+    title: str
+    content: str
+    shortcut: str = ""
+    active: bool = True
+
+
+class RegisterBody(BaseModel):
+    name: str
+    email: str
+    password: str
+    sector_id: int
+
+
+class LoginBody(BaseModel):
+    email: str
+    password: str
 
 
 class _WaKey(BaseModel):
@@ -133,7 +149,6 @@ async def get_qrcode(_: Auth):
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Evolution API retornou {r.status_code}")
         data = r.json()
-        # Evolution API v2 returns {"base64": "data:image/png;base64,...", "code": "...", "count": ...}
         base64_img = data.get("base64") or data.get("qrcode", {}).get("base64") or ""
         pairingCode = data.get("code") or data.get("pairingCode") or ""
         return {"base64": base64_img, "pairing_code": pairingCode}
@@ -189,19 +204,6 @@ def _is_business_hours(runtime: dict) -> bool:
     return start <= now <= end
 
 
-def _load_flow_engine(conn) -> FlowEngine | None:
-    """Carrega o flow ativo do banco e retorna um FlowEngine, ou None se não houver."""
-    row = conn.execute(
-        "SELECT * FROM flows WHERE active=1 ORDER BY updated_at DESC LIMIT 1"
-    ).fetchone()
-    if not row:
-        return None
-    try:
-        return FlowEngine.from_row(dict(row))
-    except Exception:
-        return None
-
-
 def _notify_sector_attendants(contact_name: str, contact_phone: str, sector: dict) -> None:
     with get_conn() as conn:
         attendants = conn.execute(
@@ -214,10 +216,29 @@ def _notify_sector_attendants(contact_name: str, contact_phone: str, sector: dic
         )
 
 
+def _assign_sector(conn, conv: dict, sector: dict, phone: str) -> None:
+    conn.execute(
+        "UPDATE conversations SET sector_id=?, institution=?, status='waiting', "
+        "updated_at=datetime('now','localtime') WHERE id=?",
+        (sector["id"], sector.get("institution", ""), conv["id"]),
+    )
+    position = conn.execute(
+        "SELECT COUNT(*) FROM conversations WHERE sector_id=? AND status='waiting'",
+        (sector["id"],),
+    ).fetchone()[0]
+    wa.send_sector_confirmation(phone, sector["name"])
+    wa.send_queue_position(phone, position, sector["name"])
+    _notify_sector_attendants(conv["contact_name"] or phone, phone, sector)
+
+
 # ── WhatsApp Webhook ──────────────────────────────────────────────────────────
 
+_RESET_KEYWORDS = {"menu", "inicio", "início", "0", "voltar"}
+_INSTITUTION_MAP = {"1": "crianca", "2": "mae"}
+
+
 @router.post("/whatsapp/webhook")
-async def whatsapp_webhook(payload: WebhookPayload):
+def whatsapp_webhook(payload: WebhookPayload):
     if payload.event not in ("messages.upsert", "message"):
         return {"ignored": True}
 
@@ -245,21 +266,28 @@ async def whatsapp_webhook(payload: WebhookPayload):
     if not runtime.get("bot_enabled", True):
         return {"ignored": True, "reason": "bot_disabled"}
 
-    _INSTITUTION_MAP = {"1": "crianca", "2": "mae"}
-
     with get_conn() as conn:
-        # Busca conversa aberta para este contato
-        conv = conn.execute(
+        conv_row = conn.execute(
             "SELECT * FROM conversations WHERE contact_phone=? AND status NOT IN ('closed') "
             "ORDER BY id DESC LIMIT 1",
             (phone,),
         ).fetchone()
+        conv = dict(conv_row) if conv_row else None
 
-        engine = _load_flow_engine(conn)
-        flow_ctx = {"contact_name": contact_name, "contact_phone": phone}
+        # Conversa em espera pelo atendente ou com atendente — só salvar mensagem
+        if conv and conv["status"] in ("waiting", "active"):
+            conn.execute(
+                "INSERT INTO messages (conversation_id, content, direction) VALUES (?,?,?)",
+                (conv["id"], text, "in"),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at=datetime('now','localtime') WHERE id=?",
+                (conv["id"],),
+            )
+            return {"action": "message_stored"}
 
-        # Palavra-chave para reiniciar — volta ao menu de instituição
-        if text.lower() in ("menu", "inicio", "início", "0", "voltar"):
+        # Palavra-chave de reinício
+        if text.lower() in _RESET_KEYWORDS:
             if conv:
                 conn.execute(
                     "UPDATE conversations SET status='pending_institution', institution='', "
@@ -271,38 +299,28 @@ async def whatsapp_webhook(payload: WebhookPayload):
                     "INSERT INTO conversations (contact_phone, contact_name, status) VALUES (?,?,?)",
                     (phone, contact_name, "pending_institution"),
                 ).lastrowid
-                conv = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
-            inst_msg = engine and engine.content("msg-inst", flow_ctx)
-            if inst_msg:
-                wa.send_text(phone, inst_msg)
-            else:
-                wa.send_institution_menu(phone, contact_name)
+                conv = dict(conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone())
+            wa.send_institution_menu(phone, contact_name)
             return {"action": "institution_menu_sent"}
 
-        # Sem conversa aberta → verificar horário antes de criar
+        # Nova conversa
         if not conv:
             if not _is_business_hours(runtime):
-                start = runtime.get("business_hours_start", "08:00")
-                end = runtime.get("business_hours_end", "18:00")
+                start_h = runtime.get("business_hours_start", "08:00")
+                end_h = runtime.get("business_hours_end", "18:00")
                 days = _format_business_days(runtime.get("business_days", "0,1,2,3,4"))
-                off_msg = engine and engine.content("msg-off", {
-                    **flow_ctx, "start": start, "end": end, "days": days,
-                })
+                off_msg = runtime.get("off_hours_message", "")
                 if off_msg:
                     wa.send_text(phone, off_msg)
                 else:
-                    wa.send_off_hours(phone, start, end, days)
+                    wa.send_off_hours(phone, start_h, end_h, days)
                 return {"action": "off_hours"}
             conv_id = conn.execute(
                 "INSERT INTO conversations (contact_phone, contact_name, status) VALUES (?,?,?)",
                 (phone, contact_name, "pending_institution"),
             ).lastrowid
-            conv = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
-            inst_msg = engine and engine.content("msg-inst", flow_ctx)
-            if inst_msg:
-                wa.send_text(phone, inst_msg)
-            else:
-                wa.send_institution_menu(phone, contact_name)
+            conv = dict(conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone())
+            wa.send_institution_menu(phone, contact_name)
             return {"action": "institution_menu_sent"}
 
         # Aguardando escolha de instituição
@@ -314,11 +332,7 @@ async def whatsapp_webhook(payload: WebhookPayload):
                     (institution,),
                 ).fetchall()]
                 if not sectors:
-                    wa.send_text(
-                        phone,
-                        "⚠️ No momento não há setores disponíveis para esta instituição. "
-                        "Por favor, tente novamente mais tarde.",
-                    )
+                    wa.send_text(phone, "⚠️ No momento não há setores disponíveis. Tente mais tarde.")
                     return {"action": "no_sectors"}
                 conn.execute(
                     "UPDATE conversations SET institution=?, status='pending_menu', "
@@ -326,7 +340,7 @@ async def whatsapp_webhook(payload: WebhookPayload):
                     (institution, conv["id"]),
                 )
                 wa.send_menu(phone, institution, sectors)
-                return {"action": "menu_sent", "institution": institution}
+                return {"action": "menu_sent"}
             wa.send_invalid_institution(phone)
             return {"action": "invalid_institution"}
 
@@ -337,65 +351,16 @@ async def whatsapp_webhook(payload: WebhookPayload):
                 "SELECT * FROM sectors WHERE active=1 AND institution=? ORDER BY menu_order",
                 (institution,),
             ).fetchall()]
-
-            chosen = None
-            if text.isdigit():
-                chosen = next((s for s in sectors if s["menu_order"] == int(text)), None)
-
+            chosen = next((s for s in sectors if text.isdigit() and s["menu_order"] == int(text)), None)
             if chosen:
-                conn.execute(
-                    "UPDATE conversations SET sector_id=?, status='waiting', "
-                    "updated_at=datetime('now','localtime') WHERE id=?",
-                    (chosen["id"], conv["id"]),
-                )
                 conn.execute(
                     "INSERT INTO messages (conversation_id, content, direction) VALUES (?,?,?)",
                     (conv["id"], text, "in"),
                 )
-                # C: posição na fila
-                position = conn.execute(
-                    "SELECT COUNT(*) FROM conversations WHERE sector_id=? AND status='waiting'",
-                    (chosen["id"],),
-                ).fetchone()[0]
-                wa.send_sector_confirmation(phone, chosen["name"])
-                wa.send_queue_position(phone, position, chosen["name"])
-                # D: notifica atendentes do setor
-                _notify_sector_attendants(conv["contact_name"] or phone, phone, chosen)
+                _assign_sector(conn, conv, chosen, phone)
                 return {"action": "sector_assigned", "sector": chosen["name"]}
-
-            if not sectors:
-                wa.send_text(
-                    phone,
-                    "⚠️ No momento não há setores disponíveis. Por favor, tente mais tarde.",
-                )
-                return {"action": "no_sectors"}
-
             wa.send_invalid_sector_with_menu(phone, sectors)
             return {"action": "invalid_option"}
-
-        # Conversa em espera ou ativa → salvar mensagem no histórico
-        if conv["status"] in ("waiting", "active"):
-            conn.execute(
-                "INSERT INTO messages (conversation_id, content, direction) VALUES (?,?,?)",
-                (conv["id"], text, "in"),
-            )
-            conn.execute(
-                "UPDATE conversations SET updated_at=datetime('now','localtime') WHERE id=?",
-                (conv["id"],),
-            )
-            return {"action": "message_stored"}
-
-        # B: aguardando avaliação CSAT
-        if conv["status"] == "pending_close":
-            rating = int(text.strip()) if text.strip() in ("1", "2", "3", "4") else None
-            conn.execute(
-                "UPDATE conversations SET status='closed', csat_rating=?, "
-                "updated_at=datetime('now','localtime') WHERE id=?",
-                (rating, conv["id"]),
-            )
-            if rating:
-                wa.send_csat_thanks(phone)
-            return {"action": "conversation_closed", "rating": rating}
 
     return {"ignored": True}
 
@@ -405,7 +370,7 @@ async def whatsapp_webhook(payload: WebhookPayload):
 @router.get("/sectors")
 def list_sectors():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM sectors ORDER BY menu_order").fetchall()
+        rows = conn.execute("SELECT * FROM sectors ORDER BY institution, menu_order").fetchall()
         return [dict(r) for r in rows]
 
 
@@ -502,7 +467,7 @@ def list_conversations(
 ):
     query = (
         "SELECT c.*, s.name AS sector_name, s.emoji AS sector_emoji, s.institution AS sector_institution, "
-        "a.name AS attendant_name, "
+        "a.name AS attendant_name, ct.name_override AS contact_name_override, "
         "(SELECT content FROM messages m1 WHERE m1.conversation_id=c.id "
         " AND m1.direction='in' ORDER BY m1.id DESC LIMIT 1) AS last_message, "
         "(SELECT COUNT(*) FROM messages m2 WHERE m2.conversation_id=c.id "
@@ -512,6 +477,7 @@ def list_conversations(
         "FROM conversations c "
         "LEFT JOIN sectors s ON c.sector_id = s.id "
         "LEFT JOIN attendants a ON c.attendant_id = a.id "
+        "LEFT JOIN contacts ct ON c.contact_phone = ct.phone "
         "WHERE 1=1 "
     )
     params: list = []
@@ -576,14 +542,11 @@ def assign_conversation(conv_id: int, attendant_id: int, _: Auth):
             "updated_at=datetime('now','localtime') WHERE id=?",
             (attendant_id, conv_id),
         )
-
-        # Notifica o contato
         wa.send_attendant_greeting(
             conv["contact_phone"],
             attendant["name"],
             attendant["sector_name"] or "",
         )
-
         return {"success": True, "attendant": dict(attendant)}
 
 
@@ -593,7 +556,6 @@ def reply_conversation(conv_id: int, body: ReplyBody, _: Auth):
         conv = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
         if not conv:
             raise HTTPException(status_code=404, detail="Conversa não encontrada")
-        # Save to DB first — message is not lost even if Evolution API is offline
         conn.execute(
             "INSERT INTO messages (conversation_id, content, direction) VALUES (?,?,?)",
             (conv_id, body.text, "out"),
@@ -616,7 +578,7 @@ def close_conversation(conv_id: int, _: Auth):
         if not conv:
             raise HTTPException(status_code=404, detail="Conversa não encontrada")
         conn.execute(
-            "UPDATE conversations SET status='pending_close', "
+            "UPDATE conversations SET status='closed', "
             "updated_at=datetime('now','localtime') WHERE id=?",
             (conv_id,),
         )
@@ -677,6 +639,201 @@ def dashboard_stats(_: Auth):
         }
 
 
+# ── Me (perfil do atendente logado) ──────────────────────────────────────────
+
+@router.get("/me")
+def get_me(auth: Auth):
+    with get_conn() as conn:
+        # Token local: usa attendant_id direto
+        att_id = auth.get("attendant_id")
+        if att_id:
+            row = conn.execute(
+                "SELECT a.*, s.name AS sector_name FROM attendants a "
+                "LEFT JOIN sectors s ON a.sector_id=s.id "
+                "WHERE a.id=? AND a.active=1 LIMIT 1",
+                (att_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+        # Token Supabase: usa sub (UUID)
+        sub = auth.get("sub", "")
+        if not sub:
+            return None
+        row = conn.execute(
+            "SELECT a.*, s.name AS sector_name FROM attendants a "
+            "LEFT JOIN sectors s ON a.sector_id=s.id "
+            "WHERE a.supabase_user_id=? AND a.active=1 LIMIT 1",
+            (sub,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# ── Register (cadastro de novo atendente) ─────────────────────────────────────
+
+@router.post("/register", status_code=201)
+def register(body: RegisterBody):
+    import bcrypt
+
+    supabase_user_id = ""
+
+    if settings.supabase_url and settings.supabase_service_key:
+        resp = httpx.post(
+            f"{settings.supabase_url}/auth/v1/admin/users",
+            headers={
+                "apikey": settings.supabase_service_key,
+                "Authorization": f"Bearer {settings.supabase_service_key}",
+                "Content-Type": "application/json",
+            },
+            json={"email": body.email, "password": body.password, "email_confirm": True},
+            timeout=10,
+        )
+        if resp.status_code == 422:
+            raise HTTPException(status_code=409, detail=resp.json().get("msg", "E-mail já cadastrado."))
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail="Falha ao criar usuário no Supabase.")
+        supabase_user_id = resp.json().get("id", "")
+
+    password_hash = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
+
+    with get_conn() as conn:
+        existing = conn.execute("SELECT id FROM attendants WHERE email=?", (body.email,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="E-mail já cadastrado como atendente.")
+
+        row_id = conn.execute(
+            "INSERT INTO attendants (name, sector_id, email, supabase_user_id, password_hash, active) "
+            "VALUES (?,?,?,?,?,1)",
+            (body.name, body.sector_id, body.email, supabase_user_id, password_hash),
+        ).lastrowid
+        row = conn.execute(
+            "SELECT a.*, s.name AS sector_name FROM attendants a "
+            "LEFT JOIN sectors s ON a.sector_id=s.id WHERE a.id=?",
+            (row_id,),
+        ).fetchone()
+        return dict(row)
+
+
+@router.post("/login")
+def login(body: LoginBody):
+    import bcrypt
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT a.*, s.name AS sector_name FROM attendants a "
+            "LEFT JOIN sectors s ON a.sector_id=s.id "
+            "WHERE a.email=? AND a.active=1 LIMIT 1",
+            (body.email,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
+
+    att = dict(row)
+    pwd_hash = att.get("password_hash", "")
+
+    if not pwd_hash:
+        raise HTTPException(status_code=401, detail="Conta sem senha configurada. Recadastre-se.")
+
+    if not bcrypt.checkpw(body.password.encode(), pwd_hash.encode()):
+        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
+
+    token = create_local_token(att["id"], att["email"])
+    return {"access_token": token, "token_type": "bearer", "attendant": att}
+
+
+# ── Contacts ──────────────────────────────────────────────────────────────────
+
+@router.get("/contacts/{phone}")
+def get_contact(phone: str, _: Auth):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM contacts WHERE phone=?", (phone,)).fetchone()
+        if not row:
+            return {"phone": phone, "name_override": "", "notes": ""}
+        return dict(row)
+
+
+@router.patch("/contacts/{phone}")
+def patch_contact(phone: str, body: ContactPatch, _: Auth):
+    sets = []
+    vals: list = []
+    if body.name_override is not None:
+        sets.append("name_override=?")
+        vals.append(body.name_override)
+    if body.notes is not None:
+        sets.append("notes=?")
+        vals.append(body.notes)
+    if not sets:
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM contacts WHERE phone=?", (phone,)).fetchone()
+            return dict(row) if row else {"phone": phone, "name_override": "", "notes": ""}
+    sets.append("updated_at=datetime('now','localtime')")
+    name_ins = body.name_override if body.name_override is not None else ""
+    notes_ins = body.notes if body.notes is not None else ""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO contacts (phone, name_override, notes) VALUES (?, ?, ?) "
+            f"ON CONFLICT(phone) DO UPDATE SET {', '.join(sets)}",
+            [phone, name_ins, notes_ins] + vals,
+        )
+        row = conn.execute("SELECT * FROM contacts WHERE phone=?", (phone,)).fetchone()
+        return dict(row)
+
+
+@router.get("/contacts/{phone}/history")
+def contact_history(phone: str, _: Auth):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.*, s.name AS sector_name, s.emoji AS sector_emoji, "
+            "a.name AS attendant_name FROM conversations c "
+            "LEFT JOIN sectors s ON c.sector_id=s.id "
+            "LEFT JOIN attendants a ON c.attendant_id=a.id "
+            "WHERE c.contact_phone=? AND c.status='closed' "
+            "ORDER BY c.created_at DESC LIMIT 20",
+            (phone,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ── Quick Replies ─────────────────────────────────────────────────────────────
+
+@router.get("/quick-replies")
+def list_quick_replies(_: Auth):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM quick_replies WHERE active=1 ORDER BY title"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+@router.post("/quick-replies", status_code=201)
+def create_quick_reply(body: QuickReplyBody, _: Auth):
+    with get_conn() as conn:
+        row_id = conn.execute(
+            "INSERT INTO quick_replies (title, content, shortcut, active) VALUES (?,?,?,?)",
+            (body.title, body.content, body.shortcut, int(body.active)),
+        ).lastrowid
+        return dict(conn.execute("SELECT * FROM quick_replies WHERE id=?", (row_id,)).fetchone())
+
+
+@router.put("/quick-replies/{qr_id}")
+def update_quick_reply(qr_id: int, body: QuickReplyBody, _: Auth):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE quick_replies SET title=?, content=?, shortcut=?, active=? WHERE id=?",
+            (body.title, body.content, body.shortcut, int(body.active), qr_id),
+        )
+        row = conn.execute("SELECT * FROM quick_replies WHERE id=?", (qr_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Resposta rápida não encontrada")
+        return dict(row)
+
+
+@router.delete("/quick-replies/{qr_id}", status_code=204)
+def delete_quick_reply(qr_id: int, _: Auth):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM quick_replies WHERE id=?", (qr_id,))
+
+
 # ── API Keys ──────────────────────────────────────────────────────────────────
 
 @router.get("/api-keys")
@@ -705,7 +862,7 @@ def create_api_key(body: ApiKeyBody, _: Auth):
             (row_id,),
         ).fetchone()
         result = dict(row)
-        result["key"] = raw  # só exibido uma vez
+        result["key"] = raw
         return result
 
 
@@ -713,43 +870,3 @@ def create_api_key(body: ApiKeyBody, _: Auth):
 def revoke_api_key(key_id: int, _: Auth):
     with get_conn() as conn:
         conn.execute("UPDATE api_keys SET active=0 WHERE id=?", (key_id,))
-
-
-# ── Flow ──────────────────────────────────────────────────────────────────────
-
-@router.get("/flow")
-def get_flow():
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM flows WHERE active=1 ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["nodes"] = json.loads(result["nodes"]) if isinstance(result["nodes"], str) else result["nodes"]
-        result["edges"] = json.loads(result["edges"]) if isinstance(result["edges"], str) else result["edges"]
-        return result
-
-
-@router.post("/flow", status_code=201)
-def save_flow(body: FlowBody, _: Auth):
-    with get_conn() as conn:
-        existing = conn.execute("SELECT id FROM flows WHERE active=1 LIMIT 1").fetchone()
-        nodes_json = json.dumps(body.nodes)
-        edges_json = json.dumps(body.edges)
-        if existing:
-            conn.execute(
-                "UPDATE flows SET name=?, nodes=?, edges=?, updated_at=datetime('now','localtime') WHERE id=?",
-                (body.name, nodes_json, edges_json, existing["id"]),
-            )
-            row = conn.execute("SELECT * FROM flows WHERE id=?", (existing["id"],)).fetchone()
-        else:
-            row_id = conn.execute(
-                "INSERT INTO flows (name, nodes, edges) VALUES (?,?,?)",
-                (body.name, nodes_json, edges_json),
-            ).lastrowid
-            row = conn.execute("SELECT * FROM flows WHERE id=?", (row_id,)).fetchone()
-        result = dict(row)
-        result["nodes"] = json.loads(result["nodes"])
-        result["edges"] = json.loads(result["edges"])
-        return result

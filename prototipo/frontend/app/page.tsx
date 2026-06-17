@@ -1,11 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { GitBranch, Settings, Bot, LogOut, Headphones } from "lucide-react";
+import { Settings, Bot, LogOut, Headphones, MessageCircle } from "lucide-react";
 import AuthGuard from "@/components/AuthGuard";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { supabase } from "@/lib/supabase";
-import { healthCheck, getDashboardStats, getSettings, updateSettings, type HealthData, type DashboardStats } from "@/lib/api";
+import { healthCheck, getDashboardStats, getSettings, updateSettings, getConversations, type HealthData, type DashboardStats, type Conversation } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 function StatCard({ label, value, sub, color, href }: { label: string; value: number; sub?: string; color: string; href?: string }) {
@@ -36,6 +36,16 @@ function ServiceDot({ ok }: { ok: boolean }) {
   );
 }
 
+function relativeTime(iso: string): string {
+  const d = new Date(iso.replace(" ", "T"));
+  const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (diffMin < 1) return "agora";
+  if (diffMin < 60) return `há ${diffMin} min`;
+  const h = Math.floor(diffMin / 60);
+  if (h < 24) return `há ${h}h`;
+  return `há ${Math.floor(h / 24)}d`;
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const [health, setHealth] = useState<HealthData | null>(null);
@@ -43,6 +53,20 @@ export default function Dashboard() {
   const [botEnabled, setBotEnabled] = useState(true);
   const [orgName, setOrgName] = useState("Casa da Criança Batuira");
   const [confirmDisableBot, setConfirmDisableBot] = useState(false);
+  const [recentConvs, setRecentConvs] = useState<Conversation[]>([]);
+
+  const loadRecentConvs = async () => {
+    const all = await getConversations();
+    if (!all) return;
+    const filtered = all.filter((c) => c.status === "waiting" || c.status === "active");
+    const sorted = [...filtered].sort((a, b) => {
+      const aUnread = (a.unread_count ?? 0) > 0 ? 1 : 0;
+      const bUnread = (b.unread_count ?? 0) > 0 ? 1 : 0;
+      if (aUnread !== bUnread) return bUnread - aUnread;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+    setRecentConvs(sorted);
+  };
 
   useEffect(() => {
     healthCheck().then(setHealth);
@@ -53,10 +77,13 @@ export default function Dashboard() {
         setOrgName(s.org_name);
       }
     });
+    loadRecentConvs();
     const interval = setInterval(() => {
       getDashboardStats().then(setStats);
+      loadRecentConvs();
     }, 8000);
     return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleBot = () => {
@@ -174,6 +201,71 @@ export default function Dashboard() {
             </section>
           )}
 
+          {/* Conversas Recentes */}
+          {recentConvs.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase">Conversas Recentes</h2>
+                <Link href="/atendimento" className="text-xs text-blue-500 hover:underline">ver todas</Link>
+              </div>
+              <div className="space-y-2">
+                {recentConvs.slice(0, 10).map((conv) => {
+                  const isMae = conv.sector_institution === "mae" || conv.institution === "mae";
+                  const hasUnread = (conv.unread_count ?? 0) > 0;
+                  return (
+                    <button
+                      key={conv.id}
+                      onClick={() => router.push(`/atendimento?conv=${conv.id}`)}
+                      className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border shadow-sm hover:shadow-md transition cursor-pointer ${
+                        isMae
+                          ? "bg-pink-50 border-pink-100 hover:bg-pink-100"
+                          : "bg-white border-gray-100 hover:bg-gray-50"
+                      }`}
+                    >
+                      {/* indicador de não lida */}
+                      <div className="shrink-0 relative">
+                        <MessageCircle className={`w-8 h-8 ${isMae ? "text-pink-400" : "text-blue-400"}`} />
+                        {hasUnread && (
+                          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center leading-none">
+                            {conv.unread_count! > 9 ? "9+" : conv.unread_count}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* info principal */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className={`text-sm font-semibold truncate ${isMae ? "text-pink-900" : "text-gray-900"}`}>
+                            {conv.contact_name || conv.contact_phone}
+                          </span>
+                          {conv.contact_name && (
+                            <span className="text-xs text-gray-400 truncate shrink-0">{conv.contact_phone}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs text-gray-500 mb-0.5">
+                          {conv.sector_emoji && <span>{conv.sector_emoji}</span>}
+                          <span className="truncate">{conv.sector_name ?? "Sem setor"}</span>
+                          <span className="text-gray-300">·</span>
+                          <span className={`shrink-0 font-medium ${conv.status === "waiting" ? "text-amber-600" : "text-green-600"}`}>
+                            {conv.status === "waiting" ? "Aguardando" : "Em atendimento"}
+                          </span>
+                        </div>
+                        {conv.last_message && (
+                          <p className="text-xs text-gray-400 truncate">{conv.last_message}</p>
+                        )}
+                      </div>
+
+                      {/* hora */}
+                      <div className="shrink-0 text-right">
+                        <span className="text-xs text-gray-400">{relativeTime(conv.updated_at)}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
           {/* Por setor */}
           {stats && stats.by_sector.length > 0 && (() => {
             const criancaSectors = stats.by_sector.filter((s) => s.institution !== "mae");
@@ -231,13 +323,6 @@ export default function Dashboard() {
           <section>
             <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">Ferramentas</h2>
             <div className="flex gap-3 flex-wrap">
-              <Link
-                href="/flow"
-                className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-50 transition"
-              >
-                <GitBranch className="w-4 h-4" />
-                Editor de Fluxo
-              </Link>
               <Link
                 href="/configuracoes"
                 className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-50 transition"
