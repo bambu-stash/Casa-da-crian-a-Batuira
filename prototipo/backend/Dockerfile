@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agents/     agents/
 COPY api/        api/
+COPY engine/     engine/
 COPY utils/      utils/
 COPY config.py   config.py
 COPY database.py database.py
